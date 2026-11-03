@@ -167,10 +167,24 @@ pub fn verdict(model: &AnalyzedModel, target: &RelationSummary, declared: bool) 
         both(&mut v, Reason::NoKey);
         return v;
     };
-    let key = target
+    // Among the non-null keys, prefer one the model still carries: a projection may drop
+    // one key's columns and keep another's.
+    let candidates: Vec<_> = target
         .keys
         .iter()
-        .find(|k| k.cols.iter().all(|c| target.not_null.contains(c)));
+        .filter(|k| k.cols.iter().all(|c| target.not_null.contains(c)))
+        .collect();
+    let out = model.output();
+    let agg_facts = aggregate_input(&model.plan).and_then(|i| model.facts(i));
+    let carried_in = |f: &RelationFacts| {
+        candidates
+            .iter()
+            .copied()
+            .find(|k| carries(f, rel, &names(&k.cols)))
+    };
+    let key = carried_in(out)
+        .or_else(|| agg_facts.and_then(|f| carried_in(f)))
+        .or_else(|| candidates.first().copied());
     let Some(key) = key else {
         v.key = names(&first.cols);
         let cols = first
@@ -191,7 +205,6 @@ pub fn verdict(model: &AnalyzedModel, target: &RelationSummary, declared: bool) 
     }
 
     // Where to check: the output, or the aggregate's input when only that carries the key.
-    let out = model.output();
     let mut facts: &RelationFacts = out;
     let mut node: &LogicalPlan = &model.plan;
     if !carries(out, rel, &v.key)
