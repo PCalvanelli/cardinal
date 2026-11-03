@@ -64,6 +64,17 @@ impl StubSpec {
     }
 }
 
+/// Warehouse functions that share a name with a DataFusion built-in but take different
+/// argument types. These replace the built-in for that adapter so planning succeeds.
+pub fn adapter_overrides(adapter: &str) -> Vec<StubSpec> {
+    match adapter.to_ascii_lowercase().as_str() {
+        // BigQuery's to_hex takes BYTES (e.g. to_hex(md5(...)) from dbt's hash macro);
+        // DataFusion's to_hex accepts integers only.
+        "bigquery" => vec![StubSpec::scalar("to_hex", "varchar")],
+        _ => vec![],
+    }
+}
+
 /// Built-in stub pack for an adapter: common warehouse functions DataFusion lacks.
 pub fn adapter_pack(adapter: &str) -> Vec<StubSpec> {
     use StubSpec as S;
