@@ -206,6 +206,34 @@ pub fn coverage(project: &Project, run: &RunResult, selected: &BTreeSet<Relation
     }
 }
 
+/// Declared exactly-once contracts in the selection: (proven, not proven).
+pub fn contracts(
+    project: &Project,
+    run: &RunResult,
+    selected: &BTreeSet<RelationId>,
+) -> (usize, usize) {
+    let mut proven = 0;
+    let mut not = 0;
+    for id in selected {
+        let Some(rel) = project.get(id) else { continue };
+        for e in &rel.exactly_once {
+            let ok = e.relation.as_ref().is_some_and(|t| {
+                run.results.get(id).is_some_and(|r| {
+                    r.verdicts
+                        .iter()
+                        .any(|v| v.declared && &v.relation == t && v.exactly_once())
+                })
+            });
+            if ok {
+                proven += 1;
+            } else {
+                not += 1;
+            }
+        }
+    }
+    (proven, not)
+}
+
 fn pct(a: usize, b: usize) -> usize {
     if b == 0 { 100 } else { (a * 100 + b / 2) / b }
 }
@@ -278,6 +306,17 @@ fn text_report(
         cov.known,
         pct(cov.known, cov.models)
     ));
+    let (proven, not) = contracts(project, run, selected);
+    if proven + not > 0 {
+        out.push_str(&format!(
+            "Contracts: {proven} of {} proven.\n",
+            plural(
+                proven + not,
+                "exactly_once contract",
+                "exactly_once contracts"
+            )
+        ));
+    }
     let by_code = pipeline::count_by_code(&findings.reported);
     let codes: Vec<String> = by_code.iter().map(|(c, n)| format!("{c} ×{n}")).collect();
     let mut line = if findings.reported.is_empty() {
@@ -320,9 +359,12 @@ fn summary_json(
     findings: &Findings,
 ) -> serde_json::Value {
     let cov = coverage(project, run, selected);
+    let (proven, not) = contracts(project, run, selected);
     json!({
         "models_analyzed": cov.models,
         "models_with_known_grain": cov.known,
+        "contracts_proven": proven,
+        "contracts_not_proven": not,
         "findings_by_code": pipeline::count_by_code(&findings.reported).into_iter().map(|(c, n)| (c.to_string(), n)).collect::<std::collections::BTreeMap<_, _>>(),
         "baselined": findings.baselined,
         "suppressed": findings.suppressed,

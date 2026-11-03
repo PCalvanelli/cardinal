@@ -1,0 +1,6 @@
+version: 2
+models:
+  - name: stg_orders
+    meta:
+      cardinal:
+        exactly_once: shop.orders

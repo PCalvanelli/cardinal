@@ -1,0 +1,48 @@
+version: 2
+sources:
+  - name: shop
+    schema: shop
+    tables:
+      - name: customers
+        description: CDC feed, one row per change
+      - name: orders
+        meta:
+          cardinal:
+            grain: [order_id]
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+          - name: customer_id
+            tests:
+              - not_null
+              - relationships:
+                  to: source('shop', 'customers')
+                  field: customer_id
+            meta:
+              cardinal:
+                references: shop.customers
+      - name: order_items
+        meta:
+          cardinal:
+            grain: [order_id, line_id]
+            references:
+              - columns: [order_id]
+                to: source('shop', 'orders')
+        columns:
+          - name: order_id
+            tests:
+              - not_null:
+                  config:
+                    severity: warn
+      - name: payments
+        description: "unique only for positive amounts, so no key"
+        columns:
+          - name: payment_id
+            tests:
+              - unique:
+                  config:
+                    where: "amount > 0"
+          - name: order_id
+            meta:
+              cardinal:
+                references: shop.orders.order_id

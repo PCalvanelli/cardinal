@@ -3,8 +3,8 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
 use crate::facts::{
-    Cardinality, ColSet, Fd, GrainStatus, JoinSite, Key, MAX_KEYS, RelationFacts, UnknownReason,
-    closure, minimize,
+    Cardinality, ColSet, Fd, GrainStatus, Ind, JoinSite, Key, LossSite, MAX_KEYS, RelationFacts,
+    RowLoss, UnknownReason, closure, minimize,
 };
 use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
@@ -19,7 +19,7 @@ use cardinal_sql::datafusion_expr::{
     BinaryExpr, Expr, LogicalPlan, Operator, WindowFunctionDefinition,
 };
 use cardinal_sql::{CardinalTable, SourceText, SqlSpan};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// Finished facts for upstream relations, looked up by id.
@@ -54,7 +54,12 @@ pub struct AnalyzedModel {
     pub arena: EvidenceArena,
     facts: HashMap<usize, Arc<RelationFacts>>,
     pub joins: Vec<JoinRecord>,
+    /// Where rows of each relation read may be lost, here or upstream.
+    pub losses: Vec<RowLoss>,
 }
+
+/// Cap on row losses kept per model.
+pub const MAX_LOSSES: usize = 32;
 
 pub fn node_id(p: &LogicalPlan) -> usize {
     p as *const LogicalPlan as usize
@@ -88,14 +93,21 @@ pub fn analyze(
         facts: HashMap::new(),
         joins: Vec::new(),
         used_join_spans: BTreeSet::new(),
+        losses: Vec::new(),
     };
     a.visit(&plan);
     let Analyzer {
         arena,
         facts,
         joins,
+        mut losses,
         ..
     } = a;
+    // Local losses first, so messages point at this model's SQL before upstream ones.
+    losses.sort_by_key(|l| l.site.model != relation);
+    let mut seen = BTreeSet::new();
+    losses.retain(|l| seen.insert((l.relation.clone(), l.site.clone())));
+    losses.truncate(MAX_LOSSES);
     AnalyzedModel {
         relation,
         display,
@@ -104,6 +116,7 @@ pub fn analyze(
         arena,
         facts,
         joins,
+        losses,
     }
 }
 
@@ -115,6 +128,7 @@ struct Analyzer<'a> {
     facts: HashMap<usize, Arc<RelationFacts>>,
     joins: Vec<JoinRecord>,
     used_join_spans: BTreeSet<SqlSpan>,
+    losses: Vec<RowLoss>,
 }
 
 /// How one output column of a projection-like node is computed from its input.
@@ -368,6 +382,19 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
             _ => None,
         })
         .collect();
+    // Each input column's first plain copy among the outputs.
+    let mut copy_of: BTreeMap<usize, usize> = BTreeMap::new();
+    for (j, o) in outs.iter().enumerate() {
+        if let Out::Col(p) = o {
+            copy_of.entry(*p).or_insert(j);
+        }
+    }
+    let to = |c: usize| copy_of.get(&c).copied();
+    let nn_why = input
+        .nn_why
+        .iter()
+        .filter_map(|(c, w)| to(*c).map(|j| (j, *w)))
+        .collect();
     let mut f = RelationFacts {
         width: m,
         keys,
@@ -375,10 +402,86 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
         not_null,
         status: input.status.clone(),
         repeats,
+        covers: input.covers.iter().filter_map(|i| i.remap(to)).collect(),
+        within: input.within.iter().filter_map(|i| i.remap(to)).collect(),
+        ranks: input
+            .ranks
+            .iter()
+            .filter_map(|(r, p)| {
+                let p: Option<ColSet> = p.iter().map(|c| to(*c)).collect();
+                Some((to(*r)?, p?))
+            })
+            .collect(),
+        nn_why,
     };
     f.normalize();
     f.settle_status(input.status.clone());
     f
+}
+
+/// The integer value of a literal, through casts.
+fn int_literal(e: &Expr) -> Option<i64> {
+    match literal_of(e)? {
+        ScalarValue::Int8(Some(v)) => Some(*v as i64),
+        ScalarValue::Int16(Some(v)) => Some(*v as i64),
+        ScalarValue::Int32(Some(v)) => Some(*v as i64),
+        ScalarValue::Int64(Some(v)) => Some(*v),
+        ScalarValue::UInt8(Some(v)) => Some(*v as i64),
+        ScalarValue::UInt16(Some(v)) => Some(*v as i64),
+        ScalarValue::UInt32(Some(v)) => Some(*v as i64),
+        ScalarValue::UInt64(Some(v)) => i64::try_from(*v).ok(),
+        _ => None,
+    }
+}
+
+/// How a filter conjunct treats the rows of a relation the input covers.
+enum Keeps {
+    /// True for every input row.
+    All,
+    /// Keeps at least one row of every partition of this rank column.
+    OnePerPartition(ColSet),
+    /// May drop rows.
+    Some,
+}
+
+/// Classify one filter conjunct against the filter's input facts.
+fn keeps(conj: &Expr, schema: &DFSchema, input: &RelationFacts) -> Keeps {
+    let col = |e: &Expr| match unalias(e) {
+        Expr::Column(c) => col_index(schema, c),
+        _ => None,
+    };
+    match conj {
+        Expr::IsNotNull(e) if col(e).is_some_and(|c| input.not_null.contains(&c)) => Keeps::All,
+        Expr::Literal(ScalarValue::Boolean(Some(true)), _) => Keeps::All,
+        Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
+            // Put the column on the left: `1 = rn` is `rn = 1`, `3 >= rn` is `rn <= 3`.
+            let (c, op, v) = match (col(left), col(right)) {
+                (Some(c), None) => (c, *op, int_literal(right)),
+                (None, Some(c)) => match op.swap() {
+                    Some(o) => (c, o, int_literal(left)),
+                    None => return Keeps::Some,
+                },
+                _ => return Keeps::Some,
+            };
+            let Some(v) = v else { return Keeps::Some };
+            let Some((_, p)) = input.ranks.iter().find(|(r, _)| *r == c) else {
+                return Keeps::Some;
+            };
+            // Every partition has a row ranked 1.
+            let keeps_rank_one = match op {
+                Operator::Eq => v == 1,
+                Operator::LtEq => v >= 1,
+                Operator::Lt => v >= 2,
+                _ => false,
+            };
+            if keeps_rank_one {
+                Keeps::OnePerPartition(p.clone())
+            } else {
+                Keeps::Some
+            }
+        }
+        _ => Keeps::Some,
+    }
 }
 
 fn literal_of(e: &Expr) -> Option<&ScalarValue> {
@@ -396,6 +499,19 @@ fn is_row_number(e: &Expr) -> Option<&WindowFunction> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// row_number, rank or dense_rank: every partition has a row where the value is 1.
+fn is_rank(e: &Expr) -> bool {
+    match unalias(e) {
+        Expr::WindowFunction(wf) => match &wf.fun {
+            WindowFunctionDefinition::WindowUDF(u) => {
+                matches!(u.name(), "row_number" | "rank" | "dense_rank")
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -431,6 +547,35 @@ impl Analyzer<'_> {
         )
     }
 
+    /// Record that rows of every relation in `covers` may be lost here.
+    fn lose(&mut self, covers: &[Ind], at: Option<SqlSpan>, what: &str, because: Option<String>) {
+        for c in covers {
+            self.losses.push(RowLoss {
+                relation: c.relation.clone(),
+                site: LossSite {
+                    model: self.relation.clone(),
+                    span: at,
+                    what: what.to_string(),
+                    because: because.clone(),
+                },
+            });
+        }
+    }
+
+    /// The trimmed source line a span is on, as a span, and its text.
+    fn line_of(&self, at: Option<SqlSpan>) -> Option<(SqlSpan, String)> {
+        let at = at?;
+        let text = SourceText::new(self.sql);
+        let line = text.line(at.start.line);
+        let lead = line.len() - line.trim_start().len();
+        let body = line.trim();
+        let start = text.offset(cardinal_sql::LineCol {
+            line: at.start.line,
+            col: 1,
+        }) + lead;
+        Some((text.span(start, start + body.len()), body.to_string()))
+    }
+
     fn rule(&mut self, plan: &LogicalPlan) -> RelationFacts {
         match plan {
             LogicalPlan::TableScan(s) => self.table_scan(s),
@@ -455,6 +600,12 @@ impl Analyzer<'_> {
             LogicalPlan::Repartition(r) => (*self.visit(&r.input)).clone(),
             LogicalPlan::Limit(l) => {
                 let mut f = (*self.visit(&l.input)).clone();
+                let skips = l.skip.as_deref().is_some_and(|e| int_literal(e) != Some(0));
+                if l.fetch.is_some() || skips {
+                    let covers = std::mem::take(&mut f.covers);
+                    self.lose(&covers, None, "LIMIT", None);
+                    f.ranks.clear();
+                }
                 let fetch = l
                     .fetch
                     .as_deref()
@@ -478,15 +629,15 @@ impl Analyzer<'_> {
                 let why = self.arena.push(Evidence::Derived { from: vec![] });
                 let width = e.schema.fields().len();
                 RelationFacts {
-                    width,
                     keys: vec![Key {
                         cols: ColSet::new(),
                         why,
                     }],
-                    fds: vec![],
-                    not_null: ColSet::new(),
                     status: GrainStatus::Known,
-                    repeats: vec![None; width],
+                    ..RelationFacts::unknown(
+                        width,
+                        UnknownReason::UnsupportedOperator(String::new()),
+                    )
                 }
             }
             LogicalPlan::Values(_) => self.unsupported(plan, "VALUES"),
@@ -516,7 +667,29 @@ impl Analyzer<'_> {
         let Some(summary) = self.upstream.summary(&id) else {
             return RelationFacts::unknown(width, UnknownReason::PlanError(id));
         };
-        let full = summary.to_facts(&mut self.arena);
+        let mut full = summary.to_facts(&mut self.arena);
+        self.losses.extend(summary.losses.iter().cloned());
+        let pairs: Vec<(usize, String)> = summary
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.name.clone()))
+            .collect();
+        if !pairs.is_empty() {
+            let why = self.arena.push(Evidence::Identity {
+                relation: id.clone(),
+            });
+            let ident = Ind {
+                relation: id.clone(),
+                pairs,
+                why,
+            };
+            // SqlToRel never pushes filters or limits into a scan, but stay safe.
+            if s.filters.is_empty() && s.fetch.is_none() {
+                full.covers.insert(0, ident.clone());
+            }
+            full.within.insert(0, ident);
+        }
         match &s.projection {
             None => full,
             Some(p) => {
@@ -538,10 +711,13 @@ impl Analyzer<'_> {
     }
 
     fn filter(&mut self, f: &Filter) -> RelationFacts {
-        let mut facts = (*self.visit(&f.input)).clone();
+        let input = self.visit(&f.input);
+        let mut facts = (*input).clone();
         let schema = f.input.schema();
         let text = SourceText::new(self.sql);
-        for conj in split_conjunction(&f.predicate) {
+        let conjuncts = split_conjunction(&f.predicate);
+        self.filter_covers(&conjuncts, schema, &input, &mut facts);
+        for conj in conjuncts {
             match conj {
                 Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
                     let lc = match unalias(left) {
@@ -574,7 +750,7 @@ impl Analyzer<'_> {
                                     why,
                                     entity: false,
                                 });
-                                facts.not_null.insert(c);
+                                facts.prove_not_null(c);
                             }
                             (Some(a), Some(b), _, _) => {
                                 let why = self.arena.push(Evidence::EqualityFilter {
@@ -597,8 +773,8 @@ impl Analyzer<'_> {
                                     why,
                                     entity: false,
                                 });
-                                facts.not_null.insert(a);
-                                facts.not_null.insert(b);
+                                facts.prove_not_null(a);
+                                facts.prove_not_null(b);
                             }
                             _ => {}
                         }
@@ -612,7 +788,9 @@ impl Analyzer<'_> {
                             | Operator::LikeMatch
                             | Operator::ILikeMatch
                     ) {
-                        facts.not_null.extend(lc.into_iter().chain(rc));
+                        for c in lc.into_iter().chain(rc) {
+                            facts.prove_not_null(c);
+                        }
                     }
                 }
                 Expr::IsNotNull(e)
@@ -620,21 +798,21 @@ impl Analyzer<'_> {
                     if let Expr::Column(c) = unalias(e)
                         && let Some(i) = col_index(schema, c)
                     {
-                        facts.not_null.insert(i);
+                        facts.prove_not_null(i);
                     }
                 }
                 Expr::Between(b) if !b.negated => {
                     if let Expr::Column(c) = unalias(&b.expr)
                         && let Some(i) = col_index(schema, c)
                     {
-                        facts.not_null.insert(i);
+                        facts.prove_not_null(i);
                     }
                 }
                 Expr::InList(l) if !l.negated => {
                     if let Expr::Column(c) = unalias(&l.expr)
                         && let Some(i) = col_index(schema, c)
                     {
-                        facts.not_null.insert(i);
+                        facts.prove_not_null(i);
                     }
                 }
                 _ => {}
@@ -642,6 +820,101 @@ impl Analyzer<'_> {
         }
         facts.normalize();
         facts
+    }
+
+    /// Which covers facts survive a filter: all of them when every conjunct is true for
+    /// every row, those a rank filter keeps one row per partition of, or none.
+    fn filter_covers(
+        &mut self,
+        conjuncts: &[&Expr],
+        schema: &DFSchema,
+        input: &RelationFacts,
+        facts: &mut RelationFacts,
+    ) {
+        let mut partition: Option<ColSet> = None;
+        let mut drops: Option<&Expr> = None;
+        let mut ranked: Option<&Expr> = None;
+        for conj in conjuncts {
+            match keeps(conj, schema, input) {
+                Keeps::All => {}
+                Keeps::OnePerPartition(p) if partition.is_none() => {
+                    partition = Some(p);
+                    ranked = Some(conj);
+                }
+                // Two rank filters can keep different rows and together keep none.
+                _ => {
+                    drops = drops.or(Some(conj));
+                }
+            }
+        }
+        let span_of = |e: &Expr| {
+            e.column_refs()
+                .into_iter()
+                .find_map(|c| c.spans().first())
+                .and_then(|s| SqlSpan::from_df(&s))
+        };
+        if drops.is_none() && partition.is_none() {
+            return;
+        }
+        facts.ranks.clear();
+        let all = std::mem::take(&mut facts.covers);
+        let (kept, lost): (Vec<Ind>, Vec<Ind>) = match (&partition, drops) {
+            (Some(p), None) => {
+                // Keep the pairs on columns the partition determines: each partition's
+                // kept row has the same values there as every row of the partition.
+                let (cl, why) = input.closure_why(p);
+                let mut k = Vec::new();
+                let mut l = Vec::new();
+                for c in all {
+                    match c.remap(|x| cl.contains(&x).then_some(x)) {
+                        Some(kept) => k.push(kept),
+                        None => l.push(c),
+                    }
+                }
+                let at = ranked.and_then(span_of);
+                let text = self
+                    .line_of(at)
+                    .map(|(_, t)| t)
+                    .unwrap_or_else(|| "a rank filter".into());
+                let k = k
+                    .into_iter()
+                    .map(|mut c| {
+                        let mut from = vec![c.why];
+                        from.extend(why.iter().copied());
+                        c.why = self.arena.push(Evidence::Preserved {
+                            at,
+                            what: format!("`{text}` keeps a row of every partition"),
+                            from,
+                        });
+                        c
+                    })
+                    .collect();
+                (k, l)
+            }
+            _ => (vec![], all),
+        };
+        facts.covers = kept;
+        if !lost.is_empty() {
+            let at = drops.or(ranked).and_then(span_of);
+            let (span, what) = match self.line_of(at) {
+                Some((s, t)) => (Some(s), format!("filter `{t}`")),
+                None => (
+                    None,
+                    format!(
+                        "filter `{}`",
+                        drops.or(ranked).map(|e| e.to_string()).unwrap_or_default()
+                    ),
+                ),
+            };
+            let because = match (&partition, drops) {
+                (Some(_), None) => Some(
+                    "the rank filter keeps one row per partition, which does not determine these columns"
+                        .to_string(),
+                ),
+                _ => None,
+            };
+            self.lose(&lost, span, &what, because);
+        }
     }
 
     fn window(&mut self, w: &Window) -> RelationFacts {
@@ -666,6 +939,11 @@ impl Analyzer<'_> {
                     _ => None,
                 })
                 .collect();
+            if let Some(p) = &partition
+                && is_rank(e)
+            {
+                f.ranks.push((out, p.clone()));
+            }
             if is_row_number(e).is_some() {
                 f.not_null.insert(out);
                 if let Some(p) = &partition {
@@ -765,6 +1043,30 @@ impl Analyzer<'_> {
             .iter()
             .map(|on| d.select_expr.iter().position(|s| unalias(s) == unalias(on)))
             .collect();
+        f.ranks.clear();
+        let all = std::mem::take(&mut f.covers);
+        let (kept, lost): (Vec<Ind>, Vec<Ind>) = match &key {
+            Some(cols) => {
+                let cl = f.closure(cols);
+                let mut k = Vec::new();
+                let mut l = Vec::new();
+                for c in all {
+                    match c.remap(|x| cl.contains(&x).then_some(x)) {
+                        Some(kept) => k.push(kept),
+                        None => l.push(c),
+                    }
+                }
+                (k, l)
+            }
+            None => (vec![], all),
+        };
+        f.covers = kept;
+        self.lose(
+            &lost,
+            None,
+            "DISTINCT ON",
+            Some("it keeps one row per value of the DISTINCT ON columns".into()),
+        );
         match key {
             Some(cols) => {
                 let why = self.arena.push(Evidence::Distinct { at: None });
@@ -787,13 +1089,60 @@ impl Analyzer<'_> {
         let not_null: ColSet = (0..width)
             .filter(|c| branches.iter().all(|b| b.not_null.contains(c)))
             .collect();
+        let mut nn_why = BTreeMap::new();
+        for c in &not_null {
+            let from: Vec<EvidenceId> = branches
+                .iter()
+                .filter_map(|b| b.nn_why.get(c).copied())
+                .collect();
+            if !from.is_empty() {
+                nn_why.insert(*c, self.arena.push(Evidence::Derived { from }));
+            }
+        }
+        // Every branch's rows are in the result.
+        let covers: Vec<Ind> = branches.iter().flat_map(|b| b.covers.clone()).collect();
+        // A value comes from a relation only if it does in every branch.
+        let mut within = Vec::new();
+        for w in &branches[0].within {
+            let mut pairs = w.pairs.clone();
+            let mut from = vec![w.why];
+            for b in &branches[1..] {
+                let best = b
+                    .within
+                    .iter()
+                    .filter(|o| o.relation == w.relation)
+                    .map(|o| {
+                        let common: Vec<(usize, String)> = pairs
+                            .iter()
+                            .filter(|p| o.pairs.contains(p))
+                            .cloned()
+                            .collect();
+                        (common, o.why)
+                    })
+                    .max_by_key(|(c, _)| c.len());
+                match best {
+                    Some((common, why)) => {
+                        pairs = common;
+                        from.push(why);
+                    }
+                    None => pairs.clear(),
+                }
+            }
+            if !pairs.is_empty() {
+                within.push(Ind {
+                    relation: w.relation.clone(),
+                    pairs,
+                    why: self.arena.push(Evidence::Derived { from }),
+                });
+            }
+        }
         let mut f = RelationFacts {
-            width,
-            keys: vec![],
-            fds: vec![],
             not_null,
             status: GrainStatus::Known,
-            repeats: vec![None; width],
+            covers,
+            within,
+            nn_why,
+            ..RelationFacts::unknown(width, UnknownReason::UnsupportedOperator(String::new()))
         };
         // A constant discriminator column with distinct literals per branch, plus a key
         // shared by every branch, keeps (key, discriminator) unique.
@@ -955,6 +1304,74 @@ impl Analyzer<'_> {
 
         let shift = |s: &ColSet| -> ColSet { s.iter().map(|c| c + nl).collect() };
         let width = j.schema.fields().len();
+
+        // Does every row of each side survive the join?
+        let jt = j.join_type;
+        let swapped: Vec<(usize, usize)> = pairs.iter().map(|(a, b)| (*b, *a)).collect();
+        let what = format!(
+            "{} join{}",
+            join_label(jt),
+            if on_names.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", on_names.join(", "))
+            }
+        );
+        let left_kept: Result<Option<EvidenceId>, String> = match jt {
+            JoinType::Left | JoinType::Full | JoinType::LeftMark => Ok(None),
+            JoinType::Inner | JoinType::Right | JoinType::LeftSemi => self
+                .match_proof(
+                    (&l, ls, &left_name),
+                    (&r, rs, &right_name),
+                    &pairs,
+                    extra,
+                    span,
+                )
+                .map(Some),
+            JoinType::LeftAnti => Err("an anti join drops every row that has a match".into()),
+            _ => Err(String::new()),
+        };
+        let right_kept: Result<Option<EvidenceId>, String> = match jt {
+            JoinType::Right | JoinType::Full | JoinType::RightMark => Ok(None),
+            JoinType::Inner | JoinType::Left | JoinType::RightSemi => self
+                .match_proof(
+                    (&r, rs, &right_name),
+                    (&l, ls, &left_name),
+                    &swapped,
+                    extra,
+                    span,
+                )
+                .map(Some),
+            JoinType::RightAnti => Err("an anti join drops every row that has a match".into()),
+            _ => Err(String::new()),
+        };
+        let kept_covers = |side: &RelationFacts,
+                           kept: &Result<Option<EvidenceId>, String>,
+                           offset: usize,
+                           this: &mut Self|
+         -> Vec<Ind> {
+            match kept {
+                Ok(proof) => side
+                    .covers
+                    .iter()
+                    .map(|c| {
+                        let mut c = c.remap(|x| Some(x + offset)).expect("non-empty");
+                        if let Some(p) = proof {
+                            c.why = this.arena.push(Evidence::Derived {
+                                from: vec![c.why, *p],
+                            });
+                        }
+                        c
+                    })
+                    .collect(),
+                Err(because) => {
+                    let because = (!because.is_empty()).then(|| because.clone());
+                    this.lose(&side.covers, span, &what, because);
+                    vec![]
+                }
+            }
+        };
+
         let left_only = matches!(
             j.join_type,
             JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark
@@ -964,12 +1381,55 @@ impl Analyzer<'_> {
             JoinType::RightSemi | JoinType::RightAnti | JoinType::RightMark
         );
         if left_only || right_only {
-            let side = if left_only { &l } else { &r };
+            let (side, kept) = if left_only {
+                (&l, &left_kept)
+            } else {
+                (&r, &right_kept)
+            };
             let mut f = (**side).clone();
+            f.covers = kept_covers(side, kept, 0, self);
+            if !matches!(jt, JoinType::LeftMark | JoinType::RightMark) {
+                f.ranks.clear();
+            }
             f.width = width;
             f.repeats.resize(width, None);
             return f;
         }
+        let mut covers = kept_covers(&l, &left_kept, 0, self);
+        covers.extend(kept_covers(&r, &right_kept, nl, self));
+        let mut within: Vec<Ind> = l.within.clone();
+        within.extend(r.within.iter().filter_map(|w| w.remap(|c| Some(c + nl))));
+        if jt == JoinType::Inner {
+            // Every output row has a = b, so either column can stand for the other (a
+            // USING join outputs only one of them).
+            for i in covers.iter_mut().chain(within.iter_mut()) {
+                let mut extra_pairs = Vec::new();
+                for (a, b) in &pairs {
+                    let b = b + nl;
+                    for (c, x) in &i.pairs {
+                        if *c == b && !i.has_pair(*a, x) {
+                            extra_pairs.push((*a, x.clone()));
+                        }
+                        if c == a && !i.has_pair(b, x) {
+                            extra_pairs.push((b, x.clone()));
+                        }
+                    }
+                }
+                i.pairs.extend(extra_pairs);
+                i.pairs.sort();
+                i.pairs.dedup();
+            }
+        }
+        let mut ranks = Vec::new();
+        // Ranks survive where each row of their side appears exactly once.
+        if left_kept.is_ok() && right_unique {
+            ranks.extend(l.ranks.iter().cloned());
+        }
+        if right_kept.is_ok() && left_unique {
+            ranks.extend(r.ranks.iter().map(|(c, p)| (c + nl, shift(p))));
+        }
+        let left_unique_why = l.superkey_why(&a_cols).unwrap_or_default();
+        let right_unique_why = r.superkey_why(&b_cols).unwrap_or_default();
 
         let left_all: ColSet = (0..nl).collect();
         let right_all: ColSet = (nl..nl + nr).collect();
@@ -1036,12 +1496,17 @@ impl Analyzer<'_> {
 
         let mut keys: Vec<Key> = Vec::new();
         let card = cardinality.unwrap_or(Cardinality::ManyToMany);
-        let kept = |k: &Key, cols: ColSet, arena: &mut EvidenceArena, keys: &mut Vec<Key>| {
+        let kept = |k: &Key,
+                    cols: ColSet,
+                    uses: &[EvidenceId],
+                    arena: &mut EvidenceArena,
+                    keys: &mut Vec<Key>| {
             let why = arena.push(Evidence::JoinKept {
                 at: span,
                 cardinality: card,
                 on: on_names.clone(),
                 from: vec![k.why],
+                uses: uses.to_vec(),
             });
             keys.push(Key { cols, why });
         };
@@ -1049,12 +1514,24 @@ impl Analyzer<'_> {
         let preserve_right = matches!(j.join_type, JoinType::Inner | JoinType::Right);
         if right_unique && preserve_left {
             for k in &l.keys {
-                kept(k, k.cols.clone(), &mut self.arena, &mut keys);
+                kept(
+                    k,
+                    k.cols.clone(),
+                    &right_unique_why,
+                    &mut self.arena,
+                    &mut keys,
+                );
             }
         }
         if left_unique && preserve_right {
             for k in &r.keys {
-                kept(k, shift(&k.cols), &mut self.arena, &mut keys);
+                kept(
+                    k,
+                    shift(&k.cols),
+                    &left_unique_why,
+                    &mut self.arena,
+                    &mut keys,
+                );
             }
         }
         let one_side_kept = (right_unique && preserve_left) || (left_unique && preserve_right);
@@ -1069,6 +1546,7 @@ impl Analyzer<'_> {
                         cardinality: card,
                         on: on_names.clone(),
                         from: vec![kl.why, kr.why],
+                        uses: vec![],
                     });
                     keys.push(Key {
                         cols: kl.cols.union(&shift(&kr.cols)).copied().collect(),
@@ -1079,16 +1557,21 @@ impl Analyzer<'_> {
         }
 
         let mut not_null = ColSet::new();
+        let mut nn_why = BTreeMap::new();
         if matches!(j.join_type, JoinType::Inner | JoinType::Left) {
             not_null.extend(l.not_null.iter().copied());
+            nn_why.extend(l.nn_why.iter().map(|(c, w)| (*c, *w)));
         }
         if matches!(j.join_type, JoinType::Inner | JoinType::Right) {
             not_null.extend(shift(&r.not_null));
+            nn_why.extend(r.nn_why.iter().map(|(c, w)| (c + nl, *w)));
         }
         if j.join_type == JoinType::Inner {
             for (a, b) in &pairs {
                 not_null.insert(*a);
                 not_null.insert(b + nl);
+                nn_why.remove(a);
+                nn_why.remove(&(b + nl));
             }
         }
 
@@ -1126,10 +1609,85 @@ impl Analyzer<'_> {
             not_null,
             status: GrainStatus::Known,
             repeats,
+            covers,
+            within,
+            ranks,
+            nn_why,
         };
         f.normalize();
         f.settle_status(GrainStatus::combine([&l.status, &r.status]));
         f
+    }
+
+    /// Evidence that every row of `side` has a match in `other` under the equality
+    /// `pairs` (side column, other column), or why that cannot be shown.
+    ///
+    /// A row of `side` matches when its join columns are non-null and some row of
+    /// `other` has the same values. Both follow when `side` takes those values from a
+    /// relation R (a within fact) and `other` contains every row of R (a covers fact)
+    /// on the same columns.
+    fn match_proof(
+        &mut self,
+        (side, side_schema, side_name): (&RelationFacts, &DFSchema, &str),
+        (other, other_schema, other_name): (&RelationFacts, &DFSchema, &str),
+        pairs: &[(usize, usize)],
+        extra: bool,
+        at: Option<SqlSpan>,
+    ) -> Result<EvidenceId, String> {
+        if extra {
+            return Err("the ON clause has conditions besides column equalities".into());
+        }
+        if pairs.is_empty() {
+            return Err("the join has no column equality".into());
+        }
+        let name = |schema: &DFSchema, c: usize| schema.field(c).name().clone();
+        let nullable: Vec<String> = pairs
+            .iter()
+            .filter(|(a, _)| !side.not_null.contains(a))
+            .map(|(a, _)| name(side_schema, *a))
+            .collect();
+        if !nullable.is_empty() {
+            return Err(format!(
+                "{side_name}.{} can be null, and a null never matches",
+                nullable.join(", ")
+            ));
+        }
+        for w in &side.within {
+            for c in other.covers.iter().filter(|c| c.relation == w.relation) {
+                let all = pairs
+                    .iter()
+                    .all(|(a, b)| w.pairs.iter().any(|(wc, x)| wc == a && c.has_pair(*b, x)));
+                if all {
+                    let a_cols: ColSet = pairs.iter().map(|(a, _)| *a).collect();
+                    let mut from = vec![w.why, c.why];
+                    from.extend(side.not_null_why(&a_cols));
+                    let cols: Vec<String> =
+                        pairs.iter().map(|(a, _)| name(side_schema, *a)).collect();
+                    return Ok(self.arena.push(Evidence::Preserved {
+                        at,
+                        what: format!(
+                            "every row of {side_name} matches {other_name} on {}",
+                            cols.join(", ")
+                        ),
+                        from,
+                    }));
+                }
+            }
+        }
+        let a: Vec<String> = pairs.iter().map(|(a, _)| name(side_schema, *a)).collect();
+        let b: Vec<String> = pairs.iter().map(|(_, b)| name(other_schema, *b)).collect();
+        let tuple = |v: &[String]| {
+            if v.len() == 1 {
+                v[0].clone()
+            } else {
+                format!("({})", v.join(", "))
+            }
+        };
+        Err(format!(
+            "nothing shows that every {side_name}.{} appears in {other_name}.{}",
+            tuple(&a),
+            tuple(&b)
+        ))
     }
 
     /// Fallback when no join key carries a span (USING joins): the first unused JOIN
@@ -1158,6 +1716,18 @@ impl Analyzer<'_> {
             }
         }
         None
+    }
+}
+
+fn join_label(t: JoinType) -> &'static str {
+    match t {
+        JoinType::Inner => "inner",
+        JoinType::Left => "left",
+        JoinType::Right => "right",
+        JoinType::Full => "full",
+        JoinType::LeftSemi | JoinType::RightSemi => "semi",
+        JoinType::LeftAnti | JoinType::RightAnti => "anti",
+        JoinType::LeftMark | JoinType::RightMark => "mark",
     }
 }
 

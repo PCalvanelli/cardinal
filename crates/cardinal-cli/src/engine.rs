@@ -8,8 +8,8 @@ use cardinal_dbt::{Kind, Project, Relation, RelationId};
 use cardinal_diag::sourcemap::SourceMap;
 use cardinal_diag::{Diagnostic, Label};
 use cardinal_grain::{
-    Cardinality, GrainStatus, RelationSummary, UnknownReason, UpstreamFacts, analyze, summarize,
-    summary_from_declared,
+    AnalyzedModel, Cardinality, GrainStatus, RelationSummary, UnknownReason, UpstreamFacts,
+    Verdict, analyze, summarize, summary_from_declared, verdict,
 };
 use cardinal_sql::provider::{Functions, TableLookup};
 use cardinal_sql::sqlparser::dialect::Dialect;
@@ -34,6 +34,9 @@ pub struct ModelResult {
     pub summary: RelationSummary,
     pub diagnostics: Vec<Diagnostic>,
     pub joins: Vec<JoinSummary>,
+    /// Exactly-once verdicts: every meta.cardinal.exactly_once target, then each parent.
+    #[serde(default)]
+    pub verdicts: Vec<Verdict>,
     /// True when the SQL parsed and planned.
     pub planned: bool,
     #[serde(skip)]
@@ -176,6 +179,8 @@ impl<'a> Engine<'a> {
             .add_json(&rel.not_null)
             .add_json(&rel.columns)
             .add_json(&rel.incremental)
+            .add_json(&rel.references)
+            .add_json(&rel.exactly_once)
             .add(cardinal_check::CHECKS_FINGERPRINT.as_bytes());
         for d in &rel.depends_on {
             k.add(d.0.as_bytes());
@@ -191,6 +196,7 @@ impl<'a> Engine<'a> {
             summary: summary_from_declared(rel, reason),
             diagnostics,
             joins: vec![],
+            verdicts: vec![],
             planned: false,
             from_cache: false,
         };
@@ -242,7 +248,9 @@ impl<'a> Engine<'a> {
                     &lookup,
                 );
                 let schema = model.plan.schema().as_arrow().clone();
-                let (summary, declared) = summarize(rel, &schema, model.output(), &model.arena);
+                let (mut summary, declared) = summarize(rel, &schema, model.output(), &model.arena);
+                summary.losses = model.losses.clone();
+                let verdicts = verdicts(rel, &model, done);
                 let cx = CheckContext {
                     relation: rel,
                     locator: &locator,
@@ -267,6 +275,7 @@ impl<'a> Engine<'a> {
                     summary,
                     diagnostics,
                     joins,
+                    verdicts,
                     planned: true,
                     from_cache: false,
                 }
@@ -275,6 +284,40 @@ impl<'a> Engine<'a> {
         self.cache.put(&rel.id.0, &key, &result);
         result
     }
+}
+
+/// Verdicts for each declared exactly_once target, then for each parent with a key.
+fn verdicts(
+    rel: &Relation,
+    model: &AnalyzedModel,
+    done: &BTreeMap<RelationId, ModelResult>,
+) -> Vec<Verdict> {
+    let mut out = Vec::new();
+    let declared: Vec<&RelationId> = rel
+        .exactly_once
+        .iter()
+        .filter_map(|e| e.relation.as_ref())
+        .collect();
+    for id in &declared {
+        if out.iter().any(|v: &Verdict| &&v.relation == id) {
+            continue;
+        }
+        out.push(match done.get(*id) {
+            Some(r) => verdict(model, &r.summary, true),
+            None => Verdict::not_read((*id).clone(), id.0.clone(), true),
+        });
+    }
+    for d in &rel.depends_on {
+        if declared.contains(&d) {
+            continue;
+        }
+        if let Some(r) = done.get(d)
+            && !r.summary.keys.is_empty()
+        {
+            out.push(verdict(model, &r.summary, false));
+        }
+    }
+    out
 }
 
 /// Identifies this build of Cardinal, so a rebuilt binary never reuses facts computed by

@@ -1,0 +1,23 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+# shop.order_items.order_id is not null: make test source_not_null_shop_order_items_order_id fail the build (severity: error, no `where` filter)
+# Add these tests to the YAML file that declares each relation.
+sources:
+  - name: shop
+    tables:
+      - name: order_items  # models/sources.yml
+        tests:
+          - dbt_utils.unique_combination_of_columns:
+              combination_of_columns: [order_id, line_id]
+        columns:
+          - name: line_id
+            tests:
+              - not_null
+          - name: order_id
+            tests:
+              - relationships:
+                  to: source('shop', 'orders')
+                  field: order_id
+# unique_combination_of_columns needs the dbt_utils package.

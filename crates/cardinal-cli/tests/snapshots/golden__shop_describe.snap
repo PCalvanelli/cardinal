@@ -9,7 +9,7 @@ grain   (order_id, line_id)
 
 column         native grain          nulls
 order_id       (order_id)            never
-line_id        (order_id, line_id)   possible
+line_id        (order_id, line_id)   never
 customer_id    (order_id)            possible
 order_date     (order_id)            possible
 shipping_fee   (order_id)            possible
@@ -17,3 +17,20 @@ line_amount    (order_id, line_id)   possible
 
 joins
   stg_orders -> int_order_items on order_id    one-to-many
+
+rows
+  int_order_items    at most once (rows may be dropped)
+      not at least once: inner join on order_id in order_lines may drop rows: nothing shows that every int_order_items.order_id appears in stg_orders.order_id
+  stg_orders         not proven (rows may be dropped or repeat)
+      not at least once: inner join on order_id in order_lines may drop rows: nothing shows that every stg_orders.order_id appears in int_order_items.order_id
+      not at most once: one-to-many: rows repeat per row of int_order_items in order_lines
+
+assumes
+  key (order_id, line_id) of shop.order_items
+      unchecked: declared by meta.cardinal.grain
+  key (order_id) of shop.orders
+      checked by test source_unique_shop_orders_order_id
+  shop.order_items.line_id is not null
+      unchecked: declared by meta.cardinal.grain
+  shop.order_items.order_id is not null
+      unchecked: declared by meta.cardinal.grain

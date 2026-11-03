@@ -36,6 +36,14 @@ enum Command {
         /// A code such as G001
         code: String,
     },
+    /// The declared facts proofs rest on, and whether dbt tests check them
+    Assumptions {
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+        /// Print dbt tests (YAML) that would check every unchecked assumption
+        #[arg(long)]
+        emit_tests: bool,
+    },
     /// Share of models with known grain, and the root causes for the rest
     Coverage {
         #[arg(long, value_enum, default_value_t = Format::Text)]
@@ -113,6 +121,9 @@ pub fn main() -> ExitCode {
         Command::Describe { model } => commands::describe::run(cli.project_dir, &model),
         Command::Explain { code } => commands::explain::run(&code),
         Command::Coverage { format } => commands::coverage::run(cli.project_dir, format),
+        Command::Assumptions { format, emit_tests } => {
+            commands::assumptions::run(cli.project_dir, format, emit_tests)
+        }
         Command::Init => commands::init::run(cli.project_dir),
         Command::Watch(args) => commands::watch::run(cli.project_dir, args),
     };

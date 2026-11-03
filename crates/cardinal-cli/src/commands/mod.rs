@@ -1,3 +1,4 @@
+pub mod assumptions;
 pub mod check;
 pub mod coverage;
 pub mod describe;

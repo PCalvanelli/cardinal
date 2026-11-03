@@ -2,8 +2,9 @@
 //! suppressions, severities, baseline, and the minimum severity.
 
 use crate::config::{Level, Severities};
+use crate::engine::ProjectLocator;
 use crate::engine::{RunResult, statuses};
-use cardinal_check::{UnknownGrainModel, unknown_grain};
+use cardinal_check::{UnknownGrainModel, contract_findings, unknown_grain};
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::suppress::{self, Suppression};
@@ -43,9 +44,13 @@ pub fn collect(
     opts: &Options<'_>,
 ) -> Findings {
     let mut raw: Vec<Diagnostic> = Vec::new();
+    let locator = ProjectLocator { project };
     for id in selected {
         if let Some(r) = run.results.get(id) {
             raw.extend(r.diagnostics.iter().cloned());
+            if let Some(rel) = project.get(id) {
+                contract_findings(project, rel, &r.verdicts, &locator, &mut raw);
+            }
         }
     }
 

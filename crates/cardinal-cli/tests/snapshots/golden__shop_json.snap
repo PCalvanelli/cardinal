@@ -139,6 +139,8 @@ expression: json_without_timing(&out)
     "baselined": 0,
     "below_min_severity": 0,
     "cache_hits": 0,
+    "contracts_not_proven": 0,
+    "contracts_proven": 0,
     "elapsed_ms": 0,
     "findings_by_code": {
       "G001": 1,

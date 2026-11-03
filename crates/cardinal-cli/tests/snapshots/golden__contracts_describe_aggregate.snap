@@ -1,0 +1,28 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+model.contracts.daily_revenue  (models/marts/daily_revenue.sql)
+
+grain   (order_date)
+        proven: GROUP BY warehouse.main.order_lines.ordered_at
+
+column       native grain   nulls
+order_date   (order_date)   possible
+revenue      (order_date)   possible
+
+rows
+  shop.order_items    exactly once  (contract; rows the aggregate reads)
+  order_lines         exactly once  (rows the aggregate reads)
+
+assumes
+  key (order_id, line_id) of shop.order_items
+      unchecked: declared by meta.cardinal.grain
+  key (order_id) of shop.orders
+      checked by test source_unique_shop_orders_order_id
+  shop.order_items.line_id is not null
+      unchecked: declared by meta.cardinal.grain
+  shop.order_items.order_id is not null
+      unchecked: declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id; test source_not_null_shop_order_items_order_id (severity: warn) does not fail the build
+  shop.order_items.order_id references shop.orders.order_id
+      unchecked: declared by meta.cardinal.references

@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2898a2f6db7406733e1073a5e918fe40f86446b206a5a6d17753d4cbc13e47c4 # shrinks to a = [[Some(0), Some(1), Some(0)], [Some(1), Some(1), Some(0)]], b = [], c = [], u = []
+cc bbab320a5979ae15b0e04fc6071e12a4f7e472e729a51e7b9fc0a0fcf8b29f47 # shrinks to (a, d) = ([[Some(0), None, Some(0)]], []), b = [], c = [], u = []
+cc 83255fc127f32e6075fe89b753816f67f446d76be9fffce65d8a53d942f8a169 # shrinks to (a, d) = ([[Some(0), Some(0), Some(0)]], [[Some(4), Some(0), Some(2)], [Some(6), Some(0), None]]), b = [[Some(3), Some(3), Some(2)], [Some(0), Some(1), Some(1)], [Some(1), Some(1), Some(1)]], c = [[Some(1), Some(0), None]], u = [[None, Some(0)]]

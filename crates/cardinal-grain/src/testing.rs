@@ -45,6 +45,7 @@ impl Tables {
                     .collect(),
                 why: String::new(),
                 declared: Some(DeclOrigin::MetaGrain),
+                assumptions: vec![],
             })
             .collect();
         let status = if keys.is_empty() {
@@ -64,9 +65,61 @@ impl Tables {
                 not_null: vec![],
                 status,
                 columns_known: true,
+                not_null_why: Default::default(),
+                covers: vec![],
+                within: vec![],
+                ranks: vec![],
+                losses: vec![],
             },
         );
         self.by_name.insert(name.to_string(), id);
+    }
+
+    /// Declare non-null columns and references (cols of `name` appear in `to.to_cols`)
+    /// on a table added earlier.
+    pub fn declare(&mut self, name: &str, not_null: &[&str], refs: &[(&[&str], &str, &[&str])]) {
+        let id = self.by_name[name].clone();
+        let to_ids: Vec<RelationId> = refs
+            .iter()
+            .map(|(_, to, _)| self.by_name[*to].clone())
+            .collect();
+        let s = self.summaries.get_mut(&id).expect("table");
+        let pos = |s: &RelationSummary, c: &str| s.col(c).expect("column");
+        for c in not_null {
+            let i = pos(s, c);
+            if !s.not_null.contains(&i) {
+                s.not_null.push(i);
+            }
+            s.not_null_why.insert(
+                i,
+                vec![cardinal_dbt::Assumption::NotNull {
+                    relation: id.clone(),
+                    column: c.to_string(),
+                }],
+            );
+        }
+        for ((cols, _, to_cols), to) in refs.iter().zip(to_ids) {
+            let mut pairs: Vec<(usize, String)> = cols
+                .iter()
+                .zip(to_cols.iter())
+                .map(|(c, t)| (pos(s, c), t.to_string()))
+                .collect();
+            pairs.sort();
+            s.within.push(crate::summary::SummaryInd {
+                relation: to.clone(),
+                pairs,
+                assumptions: vec![cardinal_dbt::Assumption::References {
+                    relation: id.clone(),
+                    cols: cols.iter().map(|c| c.to_string()).collect(),
+                    to,
+                    to_cols: to_cols.iter().map(|c| c.to_string()).collect(),
+                }],
+            });
+        }
+    }
+
+    pub fn id(&self, name: &str) -> RelationId {
+        self.by_name[name].clone()
     }
 
     pub fn insert_summary(&mut self, name: &str, s: RelationSummary) {
@@ -136,6 +189,23 @@ impl GrainCase {
         self.tables.add(name, cols, keys);
         self
     }
+    pub fn declare(
+        mut self,
+        name: &str,
+        not_null: &[&str],
+        refs: &[(&[&str], &str, &[&str])],
+    ) -> Self {
+        self.tables.declare(name, not_null, refs);
+        self
+    }
+
+    /// The verdict for `table` on the model.
+    pub fn verdict(&self, table: &str) -> crate::verdict::Verdict {
+        let m = self.run();
+        let id = self.tables.id(table);
+        crate::verdict::verdict(&m, &self.tables.summaries[&id], true)
+    }
+
     pub fn sql(mut self, sql: &str) -> Self {
         self.sql = sql.into();
         self

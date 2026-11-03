@@ -1,0 +1,70 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+error[P001]: rows of stg_orders may be dropped
+ --> models/marts/completed_orders.sql:3:1
+  |
+3 | where status = 'completed'
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^ rows of stg_orders may be dropped here
+  |
+  = note: at least once: not proven: filter `where status = 'completed'` in completed_orders may drop rows
+  = note: at most once: proven
+  = help: if dropping these rows is intended, the model does not contain every row of stg_orders: remove it from exactly_once
+  = see: cardinal explain P001
+
+warning[P002]: exactly once over shop.order_items rests on 4 unchecked assumptions
+ --> models/marts/daily_revenue.sql
+  |
+  = proven, if these hold
+  |
+  = note: key (order_id, line_id) of shop.order_items (declared by meta.cardinal.grain): unchecked
+  = note: shop.order_items.line_id is not null (declared by meta.cardinal.grain): unchecked
+  = note: shop.order_items.order_id is not null (declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id): unchecked; test source_not_null_shop_order_items_order_id only warns, so it never fails the build
+  = note: shop.order_items.order_id references shop.orders.order_id (declared by meta.cardinal.references): unchecked
+  = help: add the dbt tests that `cardinal assumptions --emit-tests` prints
+  = see: cardinal explain P002
+
+warning[P002]: exactly once over shop.order_items rests on 4 unchecked assumptions
+ --> models/marts/order_lines.sql
+  |
+  = proven, if these hold
+  |
+  = note: key (order_id, line_id) of shop.order_items (declared by meta.cardinal.grain): unchecked
+  = note: shop.order_items.line_id is not null (declared by meta.cardinal.grain): unchecked
+  = note: shop.order_items.order_id is not null (declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id): unchecked; test source_not_null_shop_order_items_order_id only warns, so it never fails the build
+  = note: shop.order_items.order_id references shop.orders.order_id (declared by meta.cardinal.references): unchecked
+  = help: add the dbt tests that `cardinal assumptions --emit-tests` prints
+  = see: cardinal explain P002
+
+error[P001]: exactly_once names `orders_archive`, which is not a model, seed, snapshot or source
+ --> models/marts/order_payments.sql
+  |
+  = in meta.cardinal.exactly_once
+  |
+  = help: use a model name, or source_name.table_name for a source
+  = see: cardinal explain P001
+
+error[P001]: rows of stg_orders may be dropped or repeated
+ --> models/marts/order_payments.sql:6:1
+  |
+6 | join {{ source('shop', 'payments') }} p on o.order_id = p.order_id
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rows of stg_orders may be dropped here
+  |
+  = note: at least once: not proven: inner join on order_id in order_payments may drop rows: nothing shows that every stg_orders.order_id appears in shop.payments.order_id
+  = note: at most once: not proven: (order_id) is not a key of the model
+  = help: use a left join, or declare the reference that guarantees a match with meta.cardinal.references
+  = see: cardinal explain P001
+
+info[G004]: grain unknown for 1 model: source shop.payments declares no key
+ --> models/sources.yml
+  |
+  = note: affects order_payments
+  = note: shop.payments declares no key
+  = help: declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test
+  = see: cardinal explain G004
+
+Analyzed 7 models in <time>: 6 with known grain (86%).
+Contracts: 4 of 7 exactly_once contracts proven.
+Findings: 3 errors, 2 warnings, 1 info (G004 ×1, P001 ×3, P002 ×2).
+Next: declare grain on 1 source to cover 1 more model: shop.payments (see cardinal coverage).
