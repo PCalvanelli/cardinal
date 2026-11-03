@@ -86,6 +86,11 @@ impl Functions {
                 f.windows.insert(n, u.clone());
             }
         }
+        for spec in stubs::adapter_overrides(adapter) {
+            if let BuiltStub::Scalar(u) = stubs::build(&spec) {
+                f.scalars.insert(spec.name.to_ascii_lowercase(), u);
+            }
+        }
         // Lookup order: built-ins, then the adapter's stub pack, then cardinal.toml stubs.
         // A cardinal.toml stub may replace an adapter stub but never a built-in.
         for (specs, origin) in [
