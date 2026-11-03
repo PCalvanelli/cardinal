@@ -183,6 +183,49 @@ impl JoinSite {
     }
 }
 
+/// Where a column was computed as `count(distinct …)`, recorded so a later sum of it can
+/// point back here, even across models.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DistinctSite {
+    pub relation: RelationId,
+    /// In that relation's compiled SQL.
+    pub span: Option<SqlSpan>,
+    /// The columns whose distinct values are counted, e.g. ["user_id"].
+    pub counted: Vec<String>,
+    /// The GROUP BY at that site, e.g. ["event_date"].
+    pub per: Vec<String>,
+    /// The GROUP BY columns the counted columns do not determine: a value can be counted
+    /// once for each of their values.
+    pub across: Vec<String>,
+}
+
+/// Column `col` holds a count of distinct values per group. Two rows that count the same
+/// value always agree on `agree_on`, so summing `col` over rows that differ on `agree_on`
+/// is exact, and summing it over rows that agree on `agree_on` can count a value twice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DistinctCount {
+    pub col: usize,
+    pub agree_on: ColSet,
+    pub site: Arc<DistinctSite>,
+}
+
+impl DistinctCount {
+    /// Move to new column positions; None if the column or an `agree_on` column has none.
+    pub fn remap(&self, f: impl Fn(usize) -> Option<usize>) -> Option<DistinctCount> {
+        Some(DistinctCount {
+            col: f(self.col)?,
+            agree_on: self
+                .agree_on
+                .iter()
+                .map(|c| f(*c))
+                .collect::<Option<ColSet>>()?,
+            site: self.site.clone(),
+        })
+    }
+}
+
+pub const MAX_DISTINCT: usize = 32;
+
 #[derive(Clone, Debug)]
 pub struct RelationFacts {
     pub width: usize,
@@ -205,6 +248,8 @@ pub struct RelationFacts {
     /// Evidence for non-null columns that rest on a declaration. A column in `not_null`
     /// with no entry here is proven by the SQL.
     pub nn_why: BTreeMap<usize, EvidenceId>,
+    /// Columns holding distinct counts (see `DistinctCount`).
+    pub distinct: Vec<DistinctCount>,
 }
 
 impl RelationFacts {
@@ -220,6 +265,7 @@ impl RelationFacts {
             within: vec![],
             ranks: vec![],
             nn_why: BTreeMap::new(),
+            distinct: vec![],
         }
     }
 
@@ -400,6 +446,14 @@ impl RelationFacts {
         self.within = dedup_inds(std::mem::take(&mut self.within));
         let nn = self.not_null.clone();
         self.nn_why.retain(|c, _| nn.contains(c));
+        let mut distinct: Vec<DistinctCount> = Vec::new();
+        for d in std::mem::take(&mut self.distinct) {
+            if d.col < width && !distinct.contains(&d) {
+                distinct.push(d);
+            }
+        }
+        distinct.truncate(MAX_DISTINCT);
+        self.distinct = distinct;
     }
 
     /// Set status from the inputs' combined status, given the keys now known.
@@ -512,6 +566,7 @@ mod tests {
             within: vec![],
             ranks: vec![],
             nn_why: BTreeMap::new(),
+            distinct: vec![],
         };
         assert_eq!(f.closure(&set(&[0])), set(&[0, 2]));
         assert!(f.is_superkey(&set(&[0, 1])));

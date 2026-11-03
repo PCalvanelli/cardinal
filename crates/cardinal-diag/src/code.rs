@@ -11,6 +11,7 @@ pub enum Code {
     G005,
     G006,
     G007,
+    G008,
     P001,
     P002,
     E001,
@@ -28,6 +29,7 @@ pub const ALL_CODES: &[Code] = &[
     Code::G005,
     Code::G006,
     Code::G007,
+    Code::G008,
     Code::P001,
     Code::P002,
     Code::E001,
@@ -47,6 +49,7 @@ impl Code {
             Code::G005 => "suppression matches no finding",
             Code::G006 => "incremental unique_key is not a key",
             Code::G007 => "window order has ties",
+            Code::G008 => "distinct count is summed",
             Code::P001 => "exactly-once contract is not proven",
             Code::P002 => "proof rests on unchecked assumptions",
             Code::E001 => "missing compiled SQL",
@@ -60,9 +63,13 @@ impl Code {
     pub fn default_severity(self) -> Severity {
         match self {
             Code::G001 => Severity::Error,
-            Code::G002 | Code::G003 | Code::G005 | Code::G006 | Code::G007 | Code::P002 => {
-                Severity::Warning
-            }
+            Code::G002
+            | Code::G003
+            | Code::G005
+            | Code::G006
+            | Code::G007
+            | Code::G008
+            | Code::P002 => Severity::Warning,
             Code::G004 => Severity::Info,
             _ => Severity::Error,
         }
@@ -90,7 +97,7 @@ impl FromStr for Code {
             .find(|c| c.to_string().eq_ignore_ascii_case(s.trim()))
             .copied()
             .ok_or_else(|| {
-                format!("unknown code `{s}` (expected G001 to G007, P001, P002 or E001 to E005)")
+                format!("unknown code `{s}` (expected G001 to G008, P001, P002 or E001 to E005)")
             })
     }
 }

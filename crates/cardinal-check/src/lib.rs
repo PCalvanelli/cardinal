@@ -6,7 +6,9 @@ mod g003;
 mod g004;
 mod g006;
 mod g007;
+mod g008;
 mod p001;
+mod sites;
 mod tool;
 
 pub use g001::FanOutAggregation;
@@ -15,6 +17,7 @@ pub use g003::ManyToManyJoin;
 pub use g004::{UnknownGrainModel, unknown_grain};
 pub use g006::IncrementalKeyNotUnique;
 pub use g007::WindowOrderTies;
+pub use g008::SummedDistinctCount;
 pub use p001::contract_findings;
 pub use tool::plan_failure;
 
@@ -50,12 +53,13 @@ pub fn model_checks() -> Vec<Box<dyn Check>> {
         Box::new(ManyToManyJoin),
         Box::new(IncrementalKeyNotUnique),
         Box::new(WindowOrderTies),
+        Box::new(SummedDistinctCount),
     ]
 }
 
 /// Changes whenever the set of checks or their output changes, so cached results from
 /// an older check set are not reused.
-pub const CHECKS_FINGERPRINT: &str = "G001-G007.2+P";
+pub const CHECKS_FINGERPRINT: &str = "G001-G008.1+P";
 
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))

@@ -114,6 +114,12 @@ const BASES: &[(&str, &str)] = &[
     ("select id, x, count(*) as n from a group by id, x", "id"),
     ("select count(*) as n from a", "n"),
     ("select a_id, max(w) as m from c group by a_id", "a_id"),
+    ("select x, count(distinct y) as n from a group by x", "x"),
+    ("select k, count(distinct a_id) as n from c group by k", "k"),
+    (
+        "select a.x, c.k, count(distinct c.a_id) as n from c join a on c.a_id = a.id group by a.x, c.k",
+        "x",
+    ),
     ("select p, count(*) as n from u group by p", "p"),
     ("select distinct p, q from u", "p"),
     ("select distinct x from a", "x"),
@@ -559,6 +565,142 @@ proptest! {
             if let Err(e) = check(q, &rows, &data) {
                 prop_assert!(false, "unsound for `{}`: {e}\ninput: {data:?}", q.sql);
             }
+        }
+    }
+}
+
+/// Sums of distinct counts: (inner query with a count `n`, outer GROUP BY, whether the
+/// analysis should judge `sum(n)` exact, and the direct count it must then equal).
+const SUMS: &[(&str, &str, bool, &str)] = &[
+    // a_id determines x, so per k each a_id is counted in one (x, k) group.
+    (
+        "select a.x, c.k, count(distinct c.a_id) as n from c join a on c.a_id = a.id group by a.x, c.k",
+        "k",
+        true,
+        "select c.k, count(distinct c.a_id) as n from c join a on c.a_id = a.id group by c.k",
+    ),
+    (
+        "select a.x, c.k, count(distinct c.a_id) as n from c join a on c.a_id = a.id group by a.x, c.k",
+        "x",
+        false,
+        "",
+    ),
+    // id is a's key: every group holds its own ids.
+    (
+        "select x, y, count(distinct id) as n from a group by x, y",
+        "x",
+        true,
+        "select x, count(distinct id) as n from a group by x",
+    ),
+    (
+        "select d.a_id, a.x, count(distinct d.id) as n from d join a on d.a_id = a.id group by d.a_id, a.x",
+        "x",
+        true,
+        "select a.x, count(distinct d.id) as n from d join a on d.a_id = a.id group by a.x",
+    ),
+    (
+        "select k, count(distinct a_id) as n from c group by k",
+        "",
+        false,
+        "",
+    ),
+    (
+        "select a_id, k, count(distinct w) as n from c group by a_id, k",
+        "a_id",
+        false,
+        "",
+    ),
+    // Grouping by the inner groups themselves is always exact.
+    (
+        "select k, count(distinct a_id) as n from c group by k",
+        "k",
+        true,
+        "select k, count(distinct a_id) as n from c group by k",
+    ),
+];
+
+fn sum_sql(inner: &str, group: &str) -> String {
+    if group.is_empty() {
+        format!("select sum(n) as s from ({inner}) t")
+    } else {
+        format!("select {group}, sum(n) as s from ({inner}) t group by {group}")
+    }
+}
+
+/// The analysis's verdict on `sum(n)`: exact unless a distinct-count fact on `n` has
+/// shared columns that, with the plain GROUP BY columns, are not a key of the input.
+fn judged_exact(tables: &Tables, sql: &str) -> bool {
+    use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
+    use cardinal_sql::datafusion_expr::{Expr, LogicalPlan};
+    let m = analyze_sql(tables, sql);
+    let mut exact = None;
+    let _ = m.plan.apply(|node| {
+        if let LogicalPlan::Aggregate(a) = node {
+            let schema = a.input.schema();
+            let input = m.facts(&a.input).expect("analyzed");
+            let n = schema.index_of_column_by_name(None, "n").expect("n");
+            let mut x: ColSet = a
+                .group_expr
+                .iter()
+                .filter_map(|g| match g {
+                    Expr::Column(c) => schema.maybe_index_of_column(c),
+                    _ => None,
+                })
+                .collect();
+            exact = Some(match input.distinct.iter().find(|d| d.col == n) {
+                None => true,
+                Some(d) => {
+                    x.extend(d.agree_on.iter().copied());
+                    input.is_superkey(&x)
+                }
+            });
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    exact.expect("an aggregate")
+}
+
+#[test]
+fn distinct_sum_verdicts() {
+    let tables = cardinal_tables();
+    for (inner, group, want, _) in SUMS {
+        let sql = sum_sql(inner, group);
+        assert_eq!(judged_exact(&tables, &sql), *want, "verdict for `{sql}`");
+    }
+}
+
+fn sorted(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    // An empty input gives no group rows on one side and a NULL sum on the other.
+    rows.retain(|r| r.iter().any(|v| v != "∅" && v != "0"));
+    rows.sort();
+    rows
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+    #[test]
+    fn exact_distinct_sums_match_direct_counts(
+        (a, d) in table_strategy(&TABLES[0]).prop_flat_map(|a| {
+            let d = d_strategy(&a);
+            (Just(a), d)
+        }),
+        b in table_strategy(&TABLES[1]),
+        c in table_strategy(&TABLES[2]),
+        u in table_strategy(&TABLES[3]),
+    ) {
+        let data = vec![a, b, c, u, d];
+        for (inner, group, exact, direct) in SUMS {
+            if !exact {
+                continue;
+            }
+            let summed = sorted(execute(&data, &sum_sql(inner, group)));
+            let counted = sorted(execute(&data, direct));
+            prop_assert_eq!(
+                &summed, &counted,
+                "sum over `{}` by {} differs from `{}`\ninput: {:?}", inner, group, direct, data
+            );
         }
     }
 }

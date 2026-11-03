@@ -52,6 +52,41 @@ expression: json_without_timing(&out)
       "severity": "warning"
     },
     {
+      "code": "G008",
+      "column": 5,
+      "end_column": 26,
+      "end_line": 3,
+      "evidence": [
+        "active_customers counts distinct customer_id per (order_date)",
+        "customer_id does not determine order_date",
+        "the sum's grouping plus the counts' shared columns is not a key of the sum's input"
+      ],
+      "file": "models/marts/customers_to_date.sql",
+      "fingerprint": "sum(active_customers)",
+      "fix": {
+        "message": "count each customer_id once, on its first order_date, and sum those instead",
+        "replacement": null
+      },
+      "label": "adds up counts of distinct customer_id across order_date",
+      "line": 3,
+      "message": "distinct count is summed",
+      "model": "model.shop.customers_to_date",
+      "notes": [
+        "a customer_id that appears with more than one order_date is counted once for each"
+      ],
+      "related": [
+        {
+          "column": 5,
+          "end_column": 32,
+          "end_line": 3,
+          "file": "models/marts/daily_active_customers.sql",
+          "line": 3,
+          "message": "counts each customer_id once per (order_date)"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
       "code": "G001",
       "column": 24,
       "end_column": 41,
@@ -111,6 +146,41 @@ expression: json_without_timing(&out)
       "severity": "warning"
     },
     {
+      "code": "G008",
+      "column": 5,
+      "end_column": 26,
+      "end_line": 3,
+      "evidence": [
+        "active_customers counts distinct customer_id per (order_date)",
+        "customer_id does not determine order_date",
+        "(date_trunc('month', order_date)) plus the counts' shared columns is not a key of the sum's input"
+      ],
+      "file": "models/marts/monthly_active_customers.sql",
+      "fingerprint": "sum(active_customers)",
+      "fix": {
+        "message": "count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)",
+        "replacement": null
+      },
+      "label": "adds up counts of distinct customer_id across order_date",
+      "line": 3,
+      "message": "distinct count is summed",
+      "model": "model.shop.monthly_active_customers",
+      "notes": [
+        "a customer_id that appears with more than one order_date is counted once for each"
+      ],
+      "related": [
+        {
+          "column": 5,
+          "end_column": 32,
+          "end_line": 3,
+          "file": "models/marts/daily_active_customers.sql",
+          "line": 3,
+          "message": "counts each customer_id once per (order_date)"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
       "code": "G004",
       "column": null,
       "end_column": null,
@@ -147,10 +217,11 @@ expression: json_without_timing(&out)
       "G002": 1,
       "G003": 1,
       "G004": 1,
-      "G005": 1
+      "G005": 1,
+      "G008": 2
     },
-    "models_analyzed": 12,
-    "models_with_known_grain": 11,
+    "models_analyzed": 15,
+    "models_with_known_grain": 14,
     "suppressed": 1
   }
 }

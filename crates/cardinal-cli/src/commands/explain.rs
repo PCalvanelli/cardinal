@@ -20,6 +20,7 @@ pub fn page(code: Code) -> &'static str {
         Code::G005 => page!("G005.md"),
         Code::G006 => page!("G006.md"),
         Code::G007 => page!("G007.md"),
+        Code::G008 => page!("G008.md"),
         Code::P001 => page!("P001.md"),
         Code::P002 => page!("P002.md"),
         Code::E001 => page!("E001.md"),

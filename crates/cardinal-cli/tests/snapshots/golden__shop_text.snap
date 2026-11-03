@@ -23,6 +23,21 @@ warning[G005]: suppression matches no finding
   = help: remove the comment
   = see: cardinal explain G005
 
+warning[G008]: distinct count is summed
+ --> models/marts/customers_to_date.sql:3:5
+  |
+3 |     sum(active_customers) over (order by order_date) as customers_to_date
+  |     ^^^^^^^^^^^^^^^^^^^^^ adds up counts of distinct customer_id across order_date
+  |
+ ::: models/marts/daily_active_customers.sql:3:5
+  |
+3 |     count(distinct customer_id) as active_customers,
+  |     --------------------------- counts each customer_id once per (order_date)
+  |
+  = note: a customer_id that appears with more than one order_date is counted once for each
+  = help: count each customer_id once, on its first order_date, and sum those instead
+  = see: cardinal explain G008
+
 error[G001]: aggregation fans out
  --> models/marts/daily_revenue.sql:4:24
   |
@@ -47,6 +62,21 @@ warning[G002]: declared key (customer_id) is not proven by the SQL
   = help: declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup
   = see: cardinal explain G002
 
+warning[G008]: distinct count is summed
+ --> models/marts/monthly_active_customers.sql:3:5
+  |
+3 |     sum(active_customers) as active_customers,
+  |     ^^^^^^^^^^^^^^^^^^^^^ adds up counts of distinct customer_id across order_date
+  |
+ ::: models/marts/daily_active_customers.sql:3:5
+  |
+3 |     count(distinct customer_id) as active_customers,
+  |     --------------------------- counts each customer_id once per (order_date)
+  |
+  = note: a customer_id that appears with more than one order_date is counted once for each
+  = help: count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)
+  = see: cardinal explain G008
+
 info[G004]: grain unknown for 1 model: source shop.events declares no key
  --> models/sources.yml
   |
@@ -55,6 +85,6 @@ info[G004]: grain unknown for 1 model: source shop.events declares no key
   = help: declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test
   = see: cardinal explain G004
 
-Analyzed 12 models in <time>: 11 with known grain (92%).
-Findings: 1 error, 3 warnings, 1 info (G001 ×1, G002 ×1, G003 ×1, G004 ×1, G005 ×1); 1 suppressed.
+Analyzed 15 models in <time>: 14 with known grain (93%).
+Findings: 1 error, 5 warnings, 1 info (G001 ×1, G002 ×1, G003 ×1, G004 ×1, G005 ×1, G008 ×2); 1 suppressed.
 Next: declare grain on 1 source to cover 1 more model: shop.events (see cardinal coverage).
