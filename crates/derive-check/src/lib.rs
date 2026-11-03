@@ -4,12 +4,16 @@ mod g001;
 mod g002;
 mod g003;
 mod g004;
+mod g006;
+mod g007;
 mod tool;
 
 pub use g001::FanOutAggregation;
 pub use g002::UnprovenDeclaredKey;
 pub use g003::ManyToManyJoin;
 pub use g004::{UnknownGrainModel, unknown_grain};
+pub use g006::IncrementalKeyNotUnique;
+pub use g007::WindowOrderTies;
 pub use tool::plan_failure;
 
 use derive_dbt::{Relation, RelationId};
@@ -42,8 +46,14 @@ pub fn model_checks() -> Vec<Box<dyn Check>> {
         Box::new(FanOutAggregation),
         Box::new(UnprovenDeclaredKey),
         Box::new(ManyToManyJoin),
+        Box::new(IncrementalKeyNotUnique),
+        Box::new(WindowOrderTies),
     ]
 }
+
+/// Changes whenever the set of checks or their output changes, so cached results from
+/// an older check set are not reused.
+pub const CHECKS_FINGERPRINT: &str = "G001-G007.1";
 
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))

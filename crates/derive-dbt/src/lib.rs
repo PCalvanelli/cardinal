@@ -6,6 +6,6 @@ pub mod project;
 pub mod select;
 
 pub use project::{
-    Column, DeclOrigin, DeclaredKey, ForeignKey, Kind, LoadError, LoadWarning, Project, Relation,
-    RelationId, find_project_root, load_project,
+    Column, DeclOrigin, DeclaredKey, ForeignKey, Incremental, Kind, LoadError, LoadWarning,
+    Project, Relation, RelationId, find_project_root, load_project,
 };

@@ -1,0 +1,6 @@
+version: 2
+models:
+  - name: inc_tested_key
+    columns:
+      - name: order_id
+        tests: [unique]

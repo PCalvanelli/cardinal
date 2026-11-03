@@ -174,7 +174,9 @@ impl<'a> Engine<'a> {
             .add(rel.file.as_bytes())
             .add_json(&rel.declared_keys)
             .add_json(&rel.not_null)
-            .add_json(&rel.columns);
+            .add_json(&rel.columns)
+            .add_json(&rel.incremental)
+            .add(derive_check::CHECKS_FINGERPRINT.as_bytes());
         for d in &rel.depends_on {
             k.add(d.0.as_bytes());
             if let Some(r) = done.get(d) {

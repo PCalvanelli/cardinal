@@ -162,6 +162,8 @@ sources:
 | G003 | warning | A join is many-to-many |
 | G004 | info | A model's grain is unknown (reported once per root cause) |
 | G005 | warning | A suppression comment no longer matches any finding |
+| G006 | warning | An incremental model's `unique_key` is not a key of its rows (error if it names a column the model does not output) |
+| G007 | warning | `row_number`, `lag`, `lead` or `first_value` is ordered by columns that can tie, so the row it picks is arbitrary |
 | E001–E005 | error | Missing compiled SQL, parse error, unresolved function, unresolved relation or column, unsupported SQL |
 
 Suppress a finding with a SQL comment and a reason:

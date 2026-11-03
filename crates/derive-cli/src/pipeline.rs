@@ -159,9 +159,12 @@ pub fn collect(
     // Severities.
     let mut all = Vec::new();
     for mut d in kept {
-        match opts.severities.resolve(d.code, &d.primary.file) {
-            Level::Off => continue,
-            Level::On(sev) => {
+        // Unconfigured codes keep the severity the check chose (G006 is an error when
+        // unique_key names a column the model does not output, a warning otherwise).
+        match opts.severities.configured(d.code, &d.primary.file) {
+            None => {}
+            Some(Level::Off) => continue,
+            Some(Level::On(sev)) => {
                 // Unknown aggregates stay at warning unless configured otherwise.
                 if !(d.code == Code::G001
                     && d.severity == Severity::Warning

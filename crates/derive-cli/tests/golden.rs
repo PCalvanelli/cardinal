@@ -155,3 +155,59 @@ fn missing_artifacts_exit_2() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("run: dbt compile"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn ledger_text() {
+    let (out, code) = derive(&fixture("ledger"), &["check", "--no-cache"]);
+    assert_eq!(
+        code, 1,
+        "a unique_key naming a missing column is an error: {out}"
+    );
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn ledger_no_false_positives() {
+    let (out, _) = derive(&fixture("ledger"), &["check", "--no-cache"]);
+    for clean in [
+        "inc_orders.sql",
+        "inc_payments_composite.sql",
+        "inc_append.sql",
+        "inc_expression_key.sql",
+        "latest_payment_fixed.sql",
+    ] {
+        assert!(
+            !out.contains(clean),
+            "{clean} should have no findings:\n{out}"
+        );
+    }
+    assert!(!out.contains("G006]: incremental unique_key (order_id) is not a key of the model's rows\n --> models/marts/inc_tested_key.sql"), "{out}");
+    assert!(
+        !out.contains("first_value(o.status)"),
+        "first_status is determined by order_id:\n{out}"
+    );
+    assert!(
+        !out.contains("fixed_rn"),
+        "payment_id breaks the ties:\n{out}"
+    );
+}
+
+#[test]
+fn ledger_severity_flags_apply_to_new_codes() {
+    let (out, code) = derive(
+        &fixture("ledger"),
+        &["check", "--no-cache", "--allow", "G006", "--deny", "G007"],
+    );
+    assert!(!out.contains("G006"), "{out}");
+    assert!(out.contains("error[G007]"), "{out}");
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn explain_new_codes() {
+    for code in ["G006", "G007"] {
+        let (out, status) = derive(&fixture("ledger"), &["explain", code]);
+        assert_eq!(status, 0);
+        assert!(out.starts_with(&format!("# {code}:")), "{out}");
+    }
+}
