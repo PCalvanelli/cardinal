@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/built%20for-dbt-FF694B?logo=dbt&logoColor=white" alt="Built for dbt">
 </p>
 
-> **Beta (v0.1.0-beta.1).** Cardinal is pre-release software. Findings, flags, the
+> **Beta (v0.1.0-beta.2).** Cardinal is pre-release software. Findings, flags, the
 > cardinal.toml format and the JSON output schema may change between beta releases, and
 > the checks have not yet been validated against a corpus of production dbt projects.
 
@@ -48,7 +48,7 @@ automatically on the first build.
 git clone https://github.com/PCalvanelli/cardinal
 cd cardinal
 cargo install --path crates/cardinal-cli
-cardinal --version   # cardinal 0.1.0-beta.1
+cardinal --version   # cardinal 0.1.0-beta.2
 ```
 
 ### 2. Try it on the bundled example
