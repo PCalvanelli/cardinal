@@ -2,9 +2,10 @@
 //! diagnostic can print its chain of reasons.
 
 use crate::facts::Cardinality;
-use cardinal_dbt::{DeclOrigin, RelationId};
+use cardinal_dbt::{Assumption, DeclOrigin, RelationId};
 use cardinal_sql::SqlSpan;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EvidenceId(pub u32);
@@ -15,17 +16,44 @@ pub enum Evidence {
         relation: RelationId,
         display: String,
         origin: DeclOrigin,
+        cols: Vec<String>,
     },
-    /// A fact proven inside an upstream model; `summary` is its rendered chain.
+    /// A fact proven inside an upstream model; `summary` is its rendered chain and
+    /// `assumptions` what that proof rests on.
     Upstream {
         relation: RelationId,
         display: String,
         summary: String,
+        assumptions: Vec<Assumption>,
+    },
+    /// A column declared non-null.
+    DeclaredNotNull {
+        relation: RelationId,
+        column: String,
+    },
+    /// meta.cardinal.references.
+    DeclaredReference {
+        relation: RelationId,
+        cols: Vec<String>,
+        to: RelationId,
+        to_cols: Vec<String>,
+    },
+    /// A relation's rows are themselves: the inclusion facts of a scan.
+    Identity {
+        relation: RelationId,
     },
     JoinKept {
         at: Option<SqlSpan>,
         cardinality: Cardinality,
         on: Vec<String>,
+        from: Vec<EvidenceId>,
+        /// What made the other side unique; part of the proof, not of its explanation.
+        uses: Vec<EvidenceId>,
+    },
+    /// Every row of a relation survives an operator that can drop rows.
+    Preserved {
+        at: Option<SqlSpan>,
+        what: String,
         from: Vec<EvidenceId>,
     },
     GroupBy {
@@ -52,10 +80,21 @@ pub enum Evidence {
     },
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// `EvidenceId(0)` is always the empty reason: a fact the SQL itself proves.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvidenceArena {
     items: Vec<Evidence>,
 }
+
+impl Default for EvidenceArena {
+    fn default() -> Self {
+        EvidenceArena {
+            items: vec![Evidence::Derived { from: vec![] }],
+        }
+    }
+}
+
+pub const NO_EVIDENCE: EvidenceId = EvidenceId(0);
 
 impl EvidenceArena {
     pub fn push(&mut self, e: Evidence) -> EvidenceId {
@@ -93,6 +132,15 @@ impl EvidenceArena {
             Evidence::Declared {
                 display, origin, ..
             } => out.push(format!("key of {display} from {}", origin.describe())),
+            Evidence::DeclaredNotNull { .. }
+            | Evidence::DeclaredReference { .. }
+            | Evidence::Identity { .. } => {}
+            Evidence::Preserved { what, from, .. } => {
+                out.push(what.clone());
+                for f in from {
+                    self.walk(*f, out, depth + 1);
+                }
+            }
             Evidence::Upstream {
                 display, summary, ..
             } => {
@@ -145,6 +193,74 @@ impl EvidenceArena {
                     self.walk(*f, out, depth + 1);
                 }
             }
+        }
+    }
+
+    /// Every assumption a fact rests on: the declarations at the leaves of its chain.
+    pub fn assumptions(&self, id: EvidenceId) -> BTreeSet<Assumption> {
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        self.collect(id, &mut out, &mut seen);
+        out
+    }
+
+    pub fn assumptions_of(&self, ids: &[EvidenceId]) -> BTreeSet<Assumption> {
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        for id in ids {
+            self.collect(*id, &mut out, &mut seen);
+        }
+        out
+    }
+
+    fn collect(&self, id: EvidenceId, out: &mut BTreeSet<Assumption>, seen: &mut BTreeSet<u32>) {
+        if !seen.insert(id.0) {
+            return;
+        }
+        match self.get(id) {
+            Evidence::Declared { relation, cols, .. } => {
+                out.insert(Assumption::Key {
+                    relation: relation.clone(),
+                    cols: cols.clone(),
+                });
+            }
+            Evidence::DeclaredNotNull { relation, column } => {
+                out.insert(Assumption::NotNull {
+                    relation: relation.clone(),
+                    column: column.clone(),
+                });
+            }
+            Evidence::DeclaredReference {
+                relation,
+                cols,
+                to,
+                to_cols,
+            } => {
+                out.insert(Assumption::References {
+                    relation: relation.clone(),
+                    cols: cols.clone(),
+                    to: to.clone(),
+                    to_cols: to_cols.clone(),
+                });
+            }
+            Evidence::Upstream { assumptions, .. } => out.extend(assumptions.iter().cloned()),
+            Evidence::JoinKept { from, uses, .. } => {
+                for f in from.iter().chain(uses) {
+                    self.collect(*f, out, seen);
+                }
+            }
+            Evidence::Preserved { from, .. }
+            | Evidence::UnionDiscriminator { from, .. }
+            | Evidence::Derived { from } => {
+                for f in from {
+                    self.collect(*f, out, seen);
+                }
+            }
+            Evidence::Identity { .. }
+            | Evidence::GroupBy { .. }
+            | Evidence::Distinct { .. }
+            | Evidence::EqualityFilter { .. }
+            | Evidence::RowNumber { .. } => {}
         }
     }
 

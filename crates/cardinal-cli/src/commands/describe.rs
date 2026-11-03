@@ -1,7 +1,7 @@
 use super::{EXIT_TOOL, eprint_error, load};
 use crate::engine::Engine;
-use cardinal_dbt::{Kind, RelationId};
-use cardinal_grain::{ColSet, EvidenceArena, GrainStatus};
+use cardinal_dbt::{Assumption, Kind, Project, RelationId};
+use cardinal_grain::{ColSet, EvidenceArena, GrainStatus, Half, Site};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -138,6 +138,59 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
             println!("  {a:<w$}{b}");
         }
     }
+    if !result.verdicts.is_empty() {
+        println!();
+        println!("rows");
+        let w = result
+            .verdicts
+            .iter()
+            .map(|v| v.display.len())
+            .max()
+            .unwrap_or(0)
+            + 4;
+        for v in &result.verdicts {
+            let mut tags = Vec::new();
+            if v.declared {
+                tags.push("contract");
+            }
+            if v.site == Site::AggregateInput {
+                tags.push("rows the aggregate reads");
+            }
+            let tags = if tags.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", tags.join("; "))
+            };
+            println!("  {:<w$}{}{tags}", v.display, v.summary());
+            for (name, h) in [
+                ("at least once", &v.at_least_once),
+                ("at most once", &v.at_most_once),
+            ] {
+                if let Half::NotProven { reasons } = h {
+                    for r in reasons {
+                        println!("      not {name}: {}", r.text(&v.display, &display));
+                    }
+                }
+            }
+        }
+    }
+    let mut assumed: BTreeSet<Assumption> = BTreeSet::new();
+    if let Some(k) = s.keys.first() {
+        assumed.extend(k.assumptions.iter().cloned());
+    }
+    for v in &result.verdicts {
+        if v.at_least_once.is_proven() || v.at_most_once.is_proven() {
+            assumed.extend(v.assumptions.iter().cloned());
+        }
+    }
+    if !assumed.is_empty() {
+        println!();
+        println!("assumes");
+        for a in &assumed {
+            println!("  {}", a.describe(&display));
+            println!("      {}", status_line(&project, a));
+        }
+    }
     if !result.diagnostics.is_empty() {
         println!();
         println!("findings");
@@ -146,4 +199,32 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
         }
     }
     0
+}
+
+/// "checked by test unique_orders_order_id" or "unchecked: declared by meta.cardinal.grain".
+pub fn status_line(project: &Project, a: &Assumption) -> String {
+    let st = project.assumption_status(a);
+    let mut line = if st.is_checked() {
+        format!(
+            "checked by {}",
+            st.checked_by
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" and ")
+        )
+    } else if st.declared_by.is_empty() {
+        "unchecked".to_string()
+    } else {
+        format!("unchecked: declared by {}", st.declared_by.join(" and "))
+    };
+    if !st.is_checked() {
+        for c in &st.checked_by {
+            line.push_str(&format!("; {c} does not fail the build"));
+        }
+    }
+    for c in &st.caveats {
+        line.push_str(&format!("; {c}"));
+    }
+    line
 }

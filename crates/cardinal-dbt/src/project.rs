@@ -82,12 +82,69 @@ impl Incremental {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ForeignKey {
-    pub column: String,
+/// Why a column is declared non-null.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum NotNullOrigin {
+    Test(String),
+    Contract,
+    ContractPrimaryKey,
+    /// meta.cardinal.grain declares a primary key: unique and non-null.
+    MetaGrain,
+}
+
+impl NotNullOrigin {
+    pub fn describe(&self) -> String {
+        match self {
+            NotNullOrigin::Test(t) => format!("test {t}"),
+            NotNullOrigin::Contract => "a not_null contract constraint".into(),
+            NotNullOrigin::ContractPrimaryKey => "a primary_key contract constraint".into(),
+            NotNullOrigin::MetaGrain => "meta.cardinal.grain".into(),
+        }
+    }
+}
+
+/// `meta.cardinal.references`: every non-null value of `cols` appears in `to.to_cols`.
+/// A declaration, like meta.cardinal.grain. dbt `relationships` tests never declare a
+/// reference; they only show that a declared one is checked at run time.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DeclaredReference {
+    /// Lowercased.
+    pub cols: Vec<String>,
     pub to: RelationId,
-    pub to_column: String,
-    pub test: String,
+    /// Lowercased, same length as `cols`.
+    pub to_cols: Vec<String>,
+}
+
+/// A dbt data test attached to a relation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataTest {
+    pub name: String,
+    pub kind: TestKind,
+    /// Has a `where` config, so it checks only some rows and declares nothing.
+    pub filtered: bool,
+    /// severity: warn, so a failure does not fail the build.
+    pub warn_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestKind {
+    Unique(Vec<String>),
+    NotNull(String),
+    Relationships {
+        column: String,
+        to: RelationId,
+        field: String,
+    },
+    Other,
+}
+
+/// One relation named by `meta.cardinal.exactly_once`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExactlyOnce {
+    /// As written.
+    pub name: String,
+    /// None when no model, seed, snapshot or source has that name.
+    pub relation: Option<RelationId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,8 +180,15 @@ pub struct Relation {
     pub columns: Vec<Column>,
     pub columns_from: ColumnsFrom,
     pub declared_keys: Vec<DeclaredKey>,
-    pub not_null: BTreeSet<String>,
-    pub foreign_keys: Vec<ForeignKey>,
+    /// Columns declared non-null, and every declaration of each.
+    pub not_null: BTreeMap<String, Vec<NotNullOrigin>>,
+    /// From meta.cardinal.references.
+    pub references: Vec<DeclaredReference>,
+    /// From meta.cardinal.exactly_once.
+    pub exactly_once: Vec<ExactlyOnce>,
+    pub tests: Vec<DataTest>,
+    /// `contract: {enforced: true}`, so the warehouse applies its constraints.
+    pub contract_enforced: bool,
     pub tags: Vec<String>,
     /// Set for models materialized as incremental.
     pub incremental: Option<Incremental>,
@@ -145,6 +209,7 @@ pub enum LoadWarning {
     MissingCatalog { command: String },
     UnknownAdapter(String),
     CycleIgnored(Vec<RelationId>),
+    BadReference { relation: String, problem: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -173,6 +238,10 @@ impl fmt::Display for LoadWarning {
                     .map(|i| i.0.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            LoadWarning::BadReference { relation, problem } => write!(
+                f,
+                "meta.cardinal.references on {relation} is ignored: {problem}"
             ),
         }
     }
@@ -478,7 +547,7 @@ fn constraint_facts(
     model_constraints: &[crate::artifacts::Constraint],
     cols: &BTreeMap<String, ColumnInfo>,
     keys: &mut Vec<DeclaredKey>,
-    not_null: &mut BTreeSet<String>,
+    not_null: &mut BTreeMap<String, Vec<NotNullOrigin>>,
 ) {
     for c in model_constraints {
         if c.kind.as_deref() == Some("primary_key")
@@ -488,7 +557,13 @@ fn constraint_facts(
                 cols: cs.iter().map(|s| s.to_lowercase()).collect(),
                 origin: DeclOrigin::ContractPrimaryKey,
             });
-            not_null.extend(cs.iter().map(|s| s.to_lowercase()));
+            for c in cs {
+                add_not_null(
+                    not_null,
+                    c.to_lowercase(),
+                    NotNullOrigin::ContractPrimaryKey,
+                );
+            }
         }
     }
     for (k, info) in cols {
@@ -504,13 +579,307 @@ fn constraint_facts(
                         cols: vec![name.clone()],
                         origin: DeclOrigin::ContractPrimaryKey,
                     });
-                    not_null.insert(name.clone());
+                    add_not_null(not_null, name.clone(), NotNullOrigin::ContractPrimaryKey);
                 }
                 Some("not_null") => {
-                    not_null.insert(name.clone());
+                    add_not_null(not_null, name.clone(), NotNullOrigin::Contract);
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+fn add_not_null(
+    not_null: &mut BTreeMap<String, Vec<NotNullOrigin>>,
+    col: String,
+    origin: NotNullOrigin,
+) {
+    let v = not_null.entry(col).or_default();
+    if !v.contains(&origin) {
+        v.push(origin);
+    }
+}
+
+/// meta.cardinal.grain: a key, and (as a primary key) non-null columns.
+fn grain_facts(
+    meta: Option<Vec<String>>,
+    keys: &mut Vec<DeclaredKey>,
+    not_null: &mut BTreeMap<String, Vec<NotNullOrigin>>,
+) {
+    if let Some(cols) = meta {
+        for c in &cols {
+            add_not_null(not_null, c.clone(), NotNullOrigin::MetaGrain);
+        }
+        keys.push(DeclaredKey {
+            cols,
+            origin: DeclOrigin::MetaGrain,
+        });
+    }
+}
+
+/// A meta.cardinal.references entry before its target is resolved.
+#[derive(Clone, Debug)]
+struct RawReference {
+    cols: Vec<String>,
+    to: String,
+    /// Empty: same names as `cols`, or (column-level string form) still to be split.
+    to_cols: Vec<String>,
+}
+
+fn cardinal_meta<'a>(meta: Option<&'a Value>, key: &str) -> Option<&'a Value> {
+    meta?.get("cardinal")?.get(key)
+}
+
+/// Relation-level `references`: a map or a list of maps with `columns`, `to` and
+/// optional `to_columns`.
+fn relation_references(v: &Value) -> Result<Vec<RawReference>, String> {
+    let items: Vec<&Value> = match v {
+        Value::Array(a) => a.iter().collect(),
+        Value::Object(_) => vec![v],
+        _ => return Err("expected a list of {columns, to, to_columns}".into()),
+    };
+    items
+        .into_iter()
+        .map(|it| {
+            let cols = it
+                .get("columns")
+                .or_else(|| it.get("column"))
+                .map(string_list)
+                .unwrap_or_default();
+            let to = it
+                .get("to")
+                .and_then(Value::as_str)
+                .ok_or("an entry has no `to`")?;
+            let to_cols = it
+                .get("to_columns")
+                .or_else(|| it.get("to_column"))
+                .map(string_list)
+                .unwrap_or_default();
+            if cols.is_empty() {
+                return Err(format!("the entry for {to} has no `columns`"));
+            }
+            Ok(RawReference {
+                cols,
+                to: to.to_string(),
+                to_cols,
+            })
+        })
+        .collect()
+}
+
+/// Column-level `references`: "relation", "relation.column", or {to, column}.
+fn column_reference(col: &str, v: &Value) -> Result<RawReference, String> {
+    match v {
+        Value::String(s) => Ok(RawReference {
+            cols: vec![col.to_string()],
+            to: s.clone(),
+            to_cols: vec![],
+        }),
+        Value::Object(_) => {
+            let to = v
+                .get("to")
+                .and_then(Value::as_str)
+                .ok_or("expected {to, column}")?;
+            let to_col = v
+                .get("column")
+                .or_else(|| v.get("to_column"))
+                .and_then(Value::as_str)
+                .map(|s| s.to_lowercase())
+                .unwrap_or_else(|| col.to_string());
+            Ok(RawReference {
+                cols: vec![col.to_string()],
+                to: to.to_string(),
+                to_cols: vec![to_col],
+            })
+        }
+        _ => Err("expected a relation name or {to, column}".into()),
+    }
+}
+
+/// Every meta.cardinal.references entry on a relation and its columns.
+fn raw_references(
+    meta: Option<&Value>,
+    config_meta: Option<&Value>,
+    cols: &BTreeMap<String, ColumnInfo>,
+    problems: &mut Vec<String>,
+) -> Vec<RawReference> {
+    let mut out = Vec::new();
+    if let Some(v) =
+        cardinal_meta(meta, "references").or_else(|| cardinal_meta(config_meta, "references"))
+    {
+        match relation_references(v) {
+            Ok(r) => out.extend(r),
+            Err(e) => problems.push(e),
+        }
+    }
+    for (k, info) in cols {
+        let name = info
+            .name
+            .clone()
+            .unwrap_or_else(|| k.clone())
+            .to_lowercase();
+        let cm = info.config.as_ref().and_then(|c| c.get("meta"));
+        if let Some(v) = cardinal_meta(info.meta.as_ref(), "references")
+            .or_else(|| cardinal_meta(cm, "references"))
+        {
+            match column_reference(&name, v) {
+                Ok(r) => out.push(r),
+                Err(e) => problems.push(format!("column {name}: {e}")),
+            }
+        }
+    }
+    out
+}
+
+fn exactly_once_names(meta: Option<&Value>, config_meta: Option<&Value>) -> Vec<String> {
+    cardinal_meta(meta, "exactly_once")
+        .or_else(|| cardinal_meta(config_meta, "exactly_once"))
+        .map(|v| match v {
+            Value::String(s) => vec![s.clone()],
+            Value::Array(a) => a
+                .iter()
+                .filter_map(|x| x.as_str())
+                .map(str::to_string)
+                .collect(),
+            _ => vec![],
+        })
+        .unwrap_or_default()
+}
+
+/// Strip `ref('x')` and `source('a', 'b')` to `x` and `a.b`, so either spelling works.
+fn plain_relation_name(name: &str) -> String {
+    let t = name.trim();
+    let args = |inner: &str| -> Vec<String> {
+        inner
+            .split(',')
+            .map(|a| a.trim().trim_matches(|c| c == '\'' || c == '"').to_string())
+            .filter(|a| !a.is_empty())
+            .collect()
+    };
+    for (prefix, sep) in [("ref(", ""), ("source(", ".")] {
+        if let Some(inner) = t.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
+            let a = args(inner);
+            return if sep.is_empty() {
+                a.last().cloned().unwrap_or_default()
+            } else {
+                a.join(sep)
+            };
+        }
+    }
+    t.to_string()
+}
+
+/// Resolve a relation name as a user writes it in YAML: unique id, `source.table` for
+/// sources, or the name of a model, seed or snapshot. Names are case-insensitive.
+fn resolve_name(relations: &BTreeMap<RelationId, Relation>, name: &str) -> Option<RelationId> {
+    let n = plain_relation_name(name);
+    if let Some(r) = relations.get(&RelationId(n.clone())) {
+        return Some(r.id.clone());
+    }
+    let lower = n.to_lowercase();
+    let hits: Vec<&Relation> = relations
+        .values()
+        .filter(|r| r.display.to_lowercase() == lower)
+        .collect();
+    // A model and a source can share a display name only in odd projects; prefer the model.
+    match hits.as_slice() {
+        [one] => Some(one.id.clone()),
+        [] => None,
+        many => many
+            .iter()
+            .filter(|r| r.kind != Kind::Source)
+            .map(|r| r.id.clone())
+            .next(),
+    }
+}
+
+/// Turn raw references into resolved ones, checking that every column exists when the
+/// column lists are known.
+fn resolve_references(
+    relations: &mut BTreeMap<RelationId, Relation>,
+    raw: BTreeMap<RelationId, Vec<RawReference>>,
+    warnings: &mut Vec<LoadWarning>,
+) {
+    for (id, refs) in raw {
+        let display = relations[&id].display.clone();
+        let mut resolved = Vec::new();
+        for r in refs {
+            let mut to_name = r.to.clone();
+            let mut to_cols = r.to_cols.clone();
+            let mut to = resolve_name(relations, &to_name);
+            // Column-level "relation.column" form.
+            if to.is_none()
+                && to_cols.is_empty()
+                && let Some((rel, col)) = plain_relation_name(&r.to).rsplit_once('.')
+                && let Some(t) = resolve_name(relations, rel)
+            {
+                to = Some(t);
+                to_name = rel.to_string();
+                to_cols = vec![col.to_lowercase()];
+            }
+            let Some(to) = to else {
+                warnings.push(LoadWarning::BadReference {
+                    relation: display.clone(),
+                    problem: format!("`{}` is not a model, seed, snapshot or source", r.to),
+                });
+                continue;
+            };
+            if to_cols.is_empty() {
+                to_cols = r.cols.clone();
+            }
+            let to_cols: Vec<String> = to_cols.iter().map(|c| c.to_lowercase()).collect();
+            if to_cols.len() != r.cols.len() {
+                warnings.push(LoadWarning::BadReference {
+                    relation: display.clone(),
+                    problem: format!(
+                        "{} columns reference {} columns of {to_name}",
+                        r.cols.len(),
+                        to_cols.len()
+                    ),
+                });
+                continue;
+            }
+            let missing = |rel: &Relation, cols: &[String]| -> Vec<String> {
+                if rel.columns.is_empty() {
+                    return vec![];
+                }
+                cols.iter()
+                    .filter(|c| !rel.columns.iter().any(|x| &x.name == *c))
+                    .cloned()
+                    .collect()
+            };
+            let m1 = missing(&relations[&id], &r.cols);
+            let m2 = missing(&relations[&to], &to_cols);
+            if !m1.is_empty() || !m2.is_empty() {
+                let mut parts = Vec::new();
+                if !m1.is_empty() {
+                    parts.push(format!("{display} has no column {}", m1.join(", ")));
+                }
+                if !m2.is_empty() {
+                    parts.push(format!(
+                        "{} has no column {}",
+                        relations[&to].display,
+                        m2.join(", ")
+                    ));
+                }
+                warnings.push(LoadWarning::BadReference {
+                    relation: display.clone(),
+                    problem: parts.join("; "),
+                });
+                continue;
+            }
+            let d = DeclaredReference {
+                cols: r.cols.clone(),
+                to,
+                to_cols,
+            };
+            if !resolved.contains(&d) {
+                resolved.push(d);
+            }
+        }
+        if let Some(rel) = relations.get_mut(&id) {
+            rel.references = resolved;
         }
     }
 }
@@ -612,6 +981,8 @@ fn build(
     mut warnings: Vec<LoadWarning>,
 ) -> Project {
     let mut relations: BTreeMap<RelationId, Relation> = BTreeMap::new();
+    let mut raw_refs: BTreeMap<RelationId, Vec<RawReference>> = BTreeMap::new();
+    let mut raw_exactly_once: BTreeMap<RelationId, Vec<String>> = BTreeMap::new();
     let target_rel = target_dir
         .strip_prefix(root)
         .unwrap_or(target_dir)
@@ -624,22 +995,36 @@ fn build(
             _ => (vec![], ColumnsFrom::Missing),
         };
         let mut declared_keys = Vec::new();
-        if let Some(cols) =
-            meta_grain(s.meta.as_ref()).or_else(|| meta_grain(s.config.meta.as_ref()))
-        {
-            declared_keys.push(DeclaredKey {
-                cols,
-                origin: DeclOrigin::MetaGrain,
+        let mut not_null = BTreeMap::new();
+        grain_facts(
+            meta_grain(s.meta.as_ref()).or_else(|| meta_grain(s.config.meta.as_ref())),
+            &mut declared_keys,
+            &mut not_null,
+        );
+        constraint_facts(&[], &s.columns, &mut declared_keys, &mut not_null);
+        let mut problems = Vec::new();
+        let refs = raw_references(
+            s.meta.as_ref(),
+            s.config.meta.as_ref(),
+            &s.columns,
+            &mut problems,
+        );
+        let display = format!("{}.{}", s.source_name, s.name);
+        for p in problems {
+            warnings.push(LoadWarning::BadReference {
+                relation: display.clone(),
+                problem: p,
             });
         }
-        let mut not_null = BTreeSet::new();
-        constraint_facts(&[], &s.columns, &mut declared_keys, &mut not_null);
+        if !refs.is_empty() {
+            raw_refs.insert(RelationId(id.clone()), refs);
+        }
         relations.insert(
             RelationId(id.clone()),
             Relation {
                 id: RelationId(id.clone()),
                 kind: Kind::Source,
-                display: format!("{}.{}", s.source_name, s.name),
+                display,
                 package: s.package_name.clone(),
                 file: s.original_file_path.clone(),
                 compiled_sql: None,
@@ -655,7 +1040,10 @@ fn build(
                 columns_from: from,
                 declared_keys,
                 not_null,
-                foreign_keys: vec![],
+                references: vec![],
+                exactly_once: vec![],
+                tests: vec![],
+                contract_enforced: false,
                 tags: vec![],
                 incremental: None,
             },
@@ -686,15 +1074,39 @@ fn build(
             _ => (vec![], ColumnsFrom::Missing),
         };
         let mut declared_keys = Vec::new();
-        if let Some(cols) =
-            meta_grain(n.meta.as_ref()).or_else(|| meta_grain(n.config.meta.as_ref()))
-        {
-            declared_keys.push(DeclaredKey {
-                cols,
-                origin: DeclOrigin::MetaGrain,
+        let mut not_null = BTreeMap::new();
+        grain_facts(
+            meta_grain(n.meta.as_ref()).or_else(|| meta_grain(n.config.meta.as_ref())),
+            &mut declared_keys,
+            &mut not_null,
+        );
+        let mut problems = Vec::new();
+        let refs = raw_references(
+            n.meta.as_ref(),
+            n.config.meta.as_ref(),
+            &n.columns,
+            &mut problems,
+        );
+        for p in problems {
+            warnings.push(LoadWarning::BadReference {
+                relation: n.name.clone(),
+                problem: p,
             });
         }
-        let mut not_null = BTreeSet::new();
+        if !refs.is_empty() {
+            raw_refs.insert(RelationId(id.clone()), refs);
+        }
+        let exactly_once = exactly_once_names(n.meta.as_ref(), n.config.meta.as_ref());
+        if !exactly_once.is_empty() {
+            raw_exactly_once.insert(RelationId(id.clone()), exactly_once);
+        }
+        let contract_enforced = n
+            .config
+            .contract
+            .as_ref()
+            .and_then(|c| c.get("enforced"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         constraint_facts(
             &n.constraints,
             &n.columns,
@@ -754,7 +1166,10 @@ fn build(
                 columns_from: from,
                 declared_keys,
                 not_null,
-                foreign_keys: vec![],
+                references: vec![],
+                exactly_once: vec![],
+                tests: vec![],
+                contract_enforced,
                 tags: n.tags.clone(),
                 incremental,
             },
@@ -768,6 +1183,19 @@ fn build(
         .filter(|n| n.resource_type == "test")
     {
         attach_test(n, &mut relations);
+    }
+    resolve_references(&mut relations, raw_refs, &mut warnings);
+    for (id, names) in raw_exactly_once {
+        let targets: Vec<ExactlyOnce> = names
+            .into_iter()
+            .map(|name| ExactlyOnce {
+                relation: resolve_name(&relations, &name),
+                name,
+            })
+            .collect();
+        if let Some(r) = relations.get_mut(&id) {
+            r.exactly_once = targets;
+        }
     }
 
     for r in relations.values_mut() {
@@ -835,13 +1263,27 @@ fn cardinal_sql_adapters() -> &'static [&'static str] {
 fn attach_test(n: &ManifestNode, relations: &mut BTreeMap<RelationId, Relation>) {
     let Some(tm) = &n.test_metadata else { return };
     let name = tm.name.as_deref().unwrap_or("");
-    let target = n.attached_node.clone().or_else(|| {
-        n.depends_on
-            .nodes
-            .iter()
-            .find(|d| !d.starts_with("macro."))
-            .cloned()
-    });
+    let deps: Vec<&String> = n
+        .depends_on
+        .nodes
+        .iter()
+        .filter(|d| !d.starts_with("macro."))
+        .collect();
+    // Tests on sources have no attached_node, and depends_on is sorted, so a test with
+    // two inputs (relationships) names the tested relation only in its `model` argument.
+    let from_model_arg = || {
+        let m = tm.kwargs.get("model")?.as_str()?;
+        let inner = m.find("source(").or_else(|| m.find("ref("))?;
+        let call = &m[inner..];
+        let call = &call[..=call.find(')')?];
+        let id = resolve_name(relations, call)?;
+        deps.iter().any(|d| **d == id.0).then_some(id.0)
+    };
+    let target = n
+        .attached_node
+        .clone()
+        .or_else(from_model_arg)
+        .or_else(|| deps.first().map(|d| d.to_string()));
     let Some(target) = target.map(RelationId) else {
         return;
     };
@@ -860,52 +1302,86 @@ fn attach_test(n: &ManifestNode, relations: &mut BTreeMap<RelationId, Relation>)
         .find(|d| !d.starts_with("macro.") && **d != target.0)
         .cloned()
         .map(RelationId);
+    // A `where` config limits the test to some rows, so it declares nothing about the
+    // relation as a whole.
+    let filtered = n
+        .config
+        .where_
+        .as_ref()
+        .is_some_and(|w| !w.is_null() && w.as_str() != Some(""));
+    let warn_only = n
+        .config
+        .severity
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("warn"));
     let Some(rel) = relations.get_mut(&target) else {
         return;
     };
-    match name {
-        "unique" => {
-            if let Some(c) = column {
-                rel.declared_keys.push(DeclaredKey {
-                    cols: vec![c],
-                    origin: DeclOrigin::UniqueTest(test_name),
-                });
+    let kind = match name {
+        "unique" => match column {
+            Some(c) => {
+                if !filtered {
+                    rel.declared_keys.push(DeclaredKey {
+                        cols: vec![c.clone()],
+                        origin: DeclOrigin::UniqueTest(test_name.clone()),
+                    });
+                }
+                TestKind::Unique(vec![c])
             }
-        }
+            None => TestKind::Other,
+        },
         "unique_combination_of_columns" => {
             let cols = kw
                 .get("combination_of_columns")
                 .map(string_list)
                 .unwrap_or_default();
             let cols: Vec<String> = cols.iter().filter_map(|c| plain_column(c)).collect();
-            if !cols.is_empty() {
-                rel.declared_keys.push(DeclaredKey {
-                    cols,
-                    origin: DeclOrigin::UniqueCombination(test_name),
-                });
+            if cols.is_empty() {
+                TestKind::Other
+            } else {
+                if !filtered {
+                    rel.declared_keys.push(DeclaredKey {
+                        cols: cols.clone(),
+                        origin: DeclOrigin::UniqueCombination(test_name.clone()),
+                    });
+                }
+                TestKind::Unique(cols)
             }
         }
-        "not_null" => {
-            if let Some(c) = column {
-                rel.not_null.insert(c);
+        "not_null" => match column {
+            Some(c) => {
+                if !filtered {
+                    add_not_null(
+                        &mut rel.not_null,
+                        c.clone(),
+                        NotNullOrigin::Test(test_name.clone()),
+                    );
+                }
+                TestKind::NotNull(c)
             }
-        }
+            None => TestKind::Other,
+        },
+        // Checks a declared reference; never declares one.
         "relationships" => {
             let field = kw
                 .get("field")
                 .and_then(Value::as_str)
                 .and_then(plain_column);
-            if let (Some(c), Some(f), Some(to)) = (column, field, other) {
-                rel.foreign_keys.push(ForeignKey {
-                    column: c,
-                    to,
-                    to_column: f,
-                    test: test_name,
-                });
+            match (column, field, other) {
+                (Some(column), Some(field), Some(to)) => {
+                    TestKind::Relationships { column, to, field }
+                }
+                _ => TestKind::Other,
             }
         }
-        _ => {}
-    }
+        _ => TestKind::Other,
+    };
+    rel.tests.push(DataTest {
+        name: test_name,
+        kind,
+        filtered,
+        warn_only,
+    });
 }
 
 type Levels = (
@@ -970,6 +1446,48 @@ fn levels(relations: &BTreeMap<RelationId, Relation>) -> Levels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relation_names_accept_ref_and_source_calls() {
+        assert_eq!(plain_relation_name("ref('stg_orders')"), "stg_orders");
+        assert_eq!(
+            plain_relation_name("ref(\"pkg\", \"stg_orders\")"),
+            "stg_orders"
+        );
+        assert_eq!(
+            plain_relation_name("source('shop', 'orders')"),
+            "shop.orders"
+        );
+        assert_eq!(plain_relation_name(" shop.orders "), "shop.orders");
+    }
+
+    #[test]
+    fn parses_reference_forms() {
+        let v: Value = serde_json::json!([
+            {"columns": ["order_id"], "to": "shop.orders"},
+            {"columns": "a", "to": "x", "to_columns": "b"}
+        ]);
+        let r = relation_references(&v).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].cols, vec!["order_id"]);
+        assert!(r[0].to_cols.is_empty(), "defaults to the same names later");
+        assert_eq!(r[1].to_cols, vec!["b"]);
+        assert!(relation_references(&serde_json::json!([{"to": "x"}])).is_err());
+        assert!(relation_references(&serde_json::json!("x")).is_err());
+
+        let c = column_reference("customer_id", &serde_json::json!("shop.customers")).unwrap();
+        assert_eq!(
+            (c.cols, c.to, c.to_cols.len()),
+            (vec!["customer_id".into()], "shop.customers".into(), 0)
+        );
+        let c = column_reference(
+            "cust",
+            &serde_json::json!({"to": "customers", "column": "ID"}),
+        )
+        .unwrap();
+        assert_eq!(c.to_cols, vec!["id"]);
+        assert!(column_reference("c", &serde_json::json!(3)).is_err());
+    }
 
     #[test]
     fn splits_relation_names() {

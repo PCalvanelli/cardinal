@@ -211,3 +211,111 @@ fn explain_new_codes() {
         assert!(out.starts_with(&format!("# {code}:")), "{out}");
     }
 }
+
+#[test]
+fn contracts_text() {
+    let (out, code) = cardinal(
+        &fixture("contracts"),
+        &["check", "--no-cache", "--min-severity", "info"],
+    );
+    assert_eq!(code, 1, "unproven contracts are errors: {out}");
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn contracts_proven_have_no_p001() {
+    let (out, _) = cardinal(&fixture("contracts"), &["check", "--no-cache"]);
+    // The file each P001 points at.
+    let lines: Vec<&str> = out.lines().collect();
+    let p001_files: Vec<&str> = lines
+        .windows(2)
+        .filter(|w| w[0].starts_with("error[P001]"))
+        .map(|w| w[1].trim_start_matches(" --> "))
+        .collect();
+    assert_eq!(p001_files.len(), 3, "{out}");
+    for proven in [
+        "stg_orders",
+        "orders_enriched",
+        "order_lines",
+        "daily_revenue",
+    ] {
+        assert!(
+            !p001_files
+                .iter()
+                .any(|f| f.contains(&format!("/{proven}.sql"))),
+            "{proven} is proven:\n{out}"
+        );
+    }
+    // order_lines and daily_revenue are proven but rest on unchecked assumptions.
+    assert_eq!(out.matches("warning[P002]").count(), 2, "{out}");
+    assert!(
+        out.contains("Contracts: 4 of 7 exactly_once contracts proven."),
+        "{out}"
+    );
+}
+
+#[test]
+fn contracts_json_summary() {
+    let (out, _) = cardinal(
+        &fixture("contracts"),
+        &["check", "--no-cache", "--format", "json"],
+    );
+    let v = json_without_timing(&out);
+    assert_eq!(v["summary"]["contracts_proven"], 4, "{v}");
+    assert_eq!(v["summary"]["contracts_not_proven"], 3, "{v}");
+}
+
+#[test]
+fn contracts_describe() {
+    let (out, code) = cardinal(&fixture("contracts"), &["describe", "orders_enriched"]);
+    assert_eq!(code, 0);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn contracts_describe_aggregate() {
+    let (out, code) = cardinal(&fixture("contracts"), &["describe", "daily_revenue"]);
+    assert_eq!(code, 0);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn contracts_assumptions() {
+    let (out, code) = cardinal(&fixture("contracts"), &["assumptions"]);
+    assert_eq!(code, 0);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn contracts_emit_tests() {
+    let (out, code) = cardinal(&fixture("contracts"), &["assumptions", "--emit-tests"]);
+    assert_eq!(code, 0);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn contracts_assumptions_json() {
+    let (out, code) = cardinal(&fixture("contracts"), &["assumptions", "--format", "json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let all = v["assumptions"].as_array().unwrap();
+    assert_eq!(all.len(), 8, "{v}");
+    let unchecked = all.iter().filter(|a| a["checked"] == false).count();
+    assert_eq!(unchecked, 4, "{v}");
+}
+
+#[test]
+fn explain_contract_codes() {
+    for code in ["P001", "P002"] {
+        let (out, status) = cardinal(&fixture("contracts"), &["explain", code]);
+        assert_eq!(status, 0);
+        assert!(out.starts_with(&format!("# {code}:")), "{out}");
+    }
+}
+
+#[test]
+fn filtered_unique_test_declares_no_key() {
+    // payments.payment_id has a unique test with a `where` filter: not a key.
+    let (out, _) = cardinal(&fixture("contracts"), &["describe", "shop.payments"]);
+    assert!(out.contains("grain   unknown"), "{out}");
+}

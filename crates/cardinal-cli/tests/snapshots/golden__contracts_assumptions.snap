@@ -1,0 +1,39 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+Cardinal's proofs rest on 8 assumptions; 4 are not checked when dbt runs.
+
+UNCHECKED  key (order_id, line_id) of shop.order_items
+           declared by meta.cardinal.grain
+           used by daily_revenue, order_lines
+
+UNCHECKED  shop.order_items.line_id is not null
+           declared by meta.cardinal.grain
+           used by daily_revenue, order_lines
+
+UNCHECKED  shop.order_items.order_id is not null
+           declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id; test source_not_null_shop_order_items_order_id (severity: warn) does not fail the build
+           used by daily_revenue, order_lines
+
+UNCHECKED  shop.order_items.order_id references shop.orders.order_id
+           declared by meta.cardinal.references
+           used by daily_revenue, order_lines
+
+checked    key (order_id) of shop.orders
+           by test source_unique_shop_orders_order_id
+           used by completed_orders, daily_revenue, order_lines, orders_enriched and 1 more
+
+checked    shop.orders.order_id is not null
+           by test source_not_null_shop_orders_order_id
+           used by completed_orders, orders_enriched, stg_orders
+
+checked    shop.orders.customer_id is not null
+           by test source_not_null_shop_orders_customer_id
+           used by orders_enriched
+
+checked    shop.orders.customer_id references shop.customers.customer_id
+           by test source_relationships_shop_orders_customer_id__customer_id__source_shop_customers_
+           used by orders_enriched
+
+Run `cardinal assumptions --emit-tests` for dbt tests that check the 4 unchecked ones.

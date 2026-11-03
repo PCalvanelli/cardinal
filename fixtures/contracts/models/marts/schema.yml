@@ -1,0 +1,22 @@
+version: 2
+models:
+  - name: orders_enriched
+    meta:
+      cardinal:
+        exactly_once: stg_orders
+  - name: order_lines
+    meta:
+      cardinal:
+        exactly_once: shop.order_items
+  - name: daily_revenue
+    meta:
+      cardinal:
+        exactly_once: shop.order_items
+  - name: completed_orders
+    meta:
+      cardinal:
+        exactly_once: stg_orders
+  - name: order_payments
+    meta:
+      cardinal:
+        exactly_once: [stg_orders, orders_archive]

@@ -270,6 +270,32 @@ expression: json_without_timing(&out)
                 "level": "error"
               },
               "fullDescription": {
+                "text": "exactly-once contract is not proven. Run `cardinal explain P001` for details."
+              },
+              "id": "P001",
+              "name": "exactly-once contract is not proven",
+              "shortDescription": {
+                "text": "exactly-once contract is not proven"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "proof rests on unchecked assumptions. Run `cardinal explain P002` for details."
+              },
+              "id": "P002",
+              "name": "proof rests on unchecked assumptions",
+              "shortDescription": {
+                "text": "proof rests on unchecked assumptions"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
                 "text": "missing compiled SQL. Run `cardinal explain E001` for details."
               },
               "id": "E001",

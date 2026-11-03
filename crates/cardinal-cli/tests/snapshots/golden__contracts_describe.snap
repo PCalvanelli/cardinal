@@ -1,0 +1,32 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+model.contracts.orders_enriched  (models/marts/orders_enriched.sql)
+
+grain   (order_id)
+        proven: many-to-one join on customer_id; key of shop.orders from meta.cardinal.grain
+
+column          native grain   nulls
+order_id        (order_id)     never
+status          (order_id)     possible
+customer_name   (order_id)     possible
+
+joins
+  stg_orders -> stg_customers on customer_id    many-to-one
+
+rows
+  stg_orders       exactly once  (contract)
+  stg_customers    not proven (rows may be dropped or repeat)
+      not at least once: stg_customers.customer_id can be null, so its key does not identify every row
+      not at most once: stg_customers.customer_id can be null, so its key does not identify every row
+
+assumes
+  key (order_id) of shop.orders
+      checked by test source_unique_shop_orders_order_id
+  shop.orders.customer_id is not null
+      checked by test source_not_null_shop_orders_customer_id
+  shop.orders.order_id is not null
+      checked by test source_not_null_shop_orders_order_id
+  shop.orders.customer_id references shop.customers.customer_id
+      checked by test source_relationships_shop_orders_customer_id__customer_id__source_shop_customers_

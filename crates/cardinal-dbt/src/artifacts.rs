@@ -48,6 +48,14 @@ pub struct NodeConfig {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub tags: Option<Value>,
+    #[serde(default)]
+    pub contract: Option<Value>,
+    /// Tests: a `where` filter limits the rows the test checks.
+    #[serde(default, rename = "where")]
+    pub where_: Option<Value>,
+    /// Tests: "warn" or "error".
+    #[serde(default)]
+    pub severity: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -68,6 +76,8 @@ pub struct ColumnInfo {
     pub constraints: Vec<Constraint>,
     #[serde(default)]
     pub meta: Option<Value>,
+    #[serde(default)]
+    pub config: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]

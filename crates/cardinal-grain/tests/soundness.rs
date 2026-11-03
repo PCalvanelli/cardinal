@@ -1,6 +1,7 @@
 //! Soundness property tests. proptest generates small tables that satisfy their
 //! declared keys; a fixed corpus of query shapes runs through DataFusion's executor;
-//! every key, dependency and non-null fact Cardinal infers must hold in the real output.
+//! every key, dependency, non-null, inclusion (covers / within) and rank fact Cardinal
+//! infers must hold in the real output.
 //! Any failure is a release blocker. The harness also logs where DataFusion's own
 //! functional dependencies find a key Cardinal missed, as a list of inference gaps.
 
@@ -41,6 +42,12 @@ const TABLES: &[TableDef] = &[
         name: "u",
         cols: &["p", "q"],
         key: None,
+    },
+    // d.a_id is declared non-null and to reference a.id; the generator keeps both true.
+    TableDef {
+        name: "d",
+        cols: &["id", "a_id", "v"],
+        key: Some(&["id"]),
     },
 ];
 
@@ -168,6 +175,111 @@ const BASES: &[(&str, &str)] = &[
         "select id, case when x > 1 then 'hi' else 'lo' end as band from a",
         "id",
     ),
+    // Preservation: d.a_id references a.id.
+    ("select d.id, a.x from d join a on d.a_id = a.id", "id"),
+    ("select d.id, a.x from a join d on a.id = d.a_id", "id"),
+    (
+        "select d.id, s.x from d join (select id, x from a where x > 1) s on d.a_id = s.id",
+        "id",
+    ),
+    (
+        "select d.id, s.n from d join (select id, count(*) as n from a group by id) s on d.a_id = s.id",
+        "id",
+    ),
+    (
+        "select d.id, s.x from d join (select * from (select a.*, row_number() over (partition by id order by x) as rn from a) t where rn = 1) s on d.a_id = s.id",
+        "id",
+    ),
+    (
+        "select d.id from d where d.a_id in (select id from a)",
+        "id",
+    ),
+    ("select d.id, a.x from d left join a on d.a_id = a.id", "id"),
+    (
+        "select d.id, a.x from d right join a on d.a_id = a.id",
+        "id",
+    ),
+    (
+        "select d.id, a.id as aid from d full join a on d.a_id = a.id",
+        "id",
+    ),
+    ("select d.id, b.z from d join b on d.a_id = b.a_id", "id"),
+    (
+        "select d.id, a.x from d join a on d.a_id = a.id and a.x > 0",
+        "id",
+    ),
+    (
+        "select d.id as i, a.x from d join a on d.a_id = a.id union all select a.id as i, a.x from a",
+        "i",
+    ),
+    ("select a_id, count(*) as n from d group by a_id", "a_id"),
+    (
+        "select d.id, a2.x from d join (select id, x from a union all select id, x from a) a2 on d.a_id = a2.id",
+        "id",
+    ),
+    (
+        "select d.id, a.x, b.z from d join a on d.a_id = a.id join b on b.a_id = a.id",
+        "id",
+    ),
+    (
+        "select d1.id, d2.id as id2 from d d1 join d d2 on d1.a_id = d2.a_id",
+        "id",
+    ),
+    (
+        "select * from d qualify rank() over (partition by a_id order by v) = 1",
+        "id",
+    ),
+    (
+        "select * from d qualify row_number() over (partition by a_id order by id) <= 2",
+        "id",
+    ),
+    (
+        "select * from (select d.*, row_number() over (partition by a_id order by id) as rn from d) t where rn = 1 and v > 0",
+        "id",
+    ),
+    (
+        "select * from (select d.*, dense_rank() over (partition by a_id order by v) as r from d) t where 1 = r",
+        "id",
+    ),
+    (
+        "select * from (select d.*, row_number() over (partition by a_id order by id) as rn from d) t where rn < 1",
+        "id",
+    ),
+    ("select id, a_id from d where v is not null", "id"),
+    ("select id, a_id from d where a_id is not null", "id"),
+    (
+        "select d.id, x.a_id from d join (select a_id from d where v > 1) x on d.a_id = x.a_id",
+        "id",
+    ),
+    (
+        "select d.id, a.x from d join a on d.a_id = a.id where d.id is not null",
+        "id",
+    ),
+    (
+        "select t.id, t.x from (select d.id, a.x, row_number() over (partition by d.id order by a.x) as rn from d join a on d.a_id = a.id) t where rn = 1",
+        "id",
+    ),
+    // Rank columns after filters and joins that can drop a partition's first row.
+    (
+        "select * from (select d.*, row_number() over (partition by a_id order by id) as rn from d) t where v > 0",
+        "id",
+    ),
+    (
+        "select * from (select d.*, rank() over (partition by a_id order by v) as r from d) t where r > 1",
+        "id",
+    ),
+    (
+        "select t.id, t.rn, b.z from (select d.*, row_number() over (partition by a_id order by id) as rn from d) t join b on t.a_id = b.a_id",
+        "id",
+    ),
+    (
+        "select t.id, t.rn, a.x from (select d.*, row_number() over (partition by a_id order by id) as rn from d) t join a on t.a_id = a.id",
+        "id",
+    ),
+    (
+        "select t.id, t.a_id, t.rn, b.z from (select d.*, row_number() over (partition by a_id order by id) as rn from d) t join b on t.id = b.a_id",
+        "id",
+    ),
 ];
 
 fn wrap(sql: &str, first: &str) -> Vec<String> {
@@ -199,6 +311,7 @@ fn cardinal_tables() -> Tables {
             }],
         );
     }
+    t.declare("d", &["a_id"], &[(&["a_id"], "a", &["id"])]);
     t
 }
 
@@ -248,6 +361,22 @@ fn table_strategy(def: &'static TableDef) -> impl Strategy<Value = Rows> {
         }
         out
     })
+}
+
+/// Rows of d: unique ids, a_id drawn from a's ids (never null), v small and nullable.
+fn d_strategy(a: &Rows) -> impl Strategy<Value = Rows> + use<> {
+    let a_ids: Vec<i64> = a.iter().filter_map(|r| r[0]).collect();
+    let n = if a_ids.is_empty() { 0 } else { 7 };
+    let cell = prop_oneof![4 => (0i64..4).prop_map(Some), 1 => Just(None)];
+    proptest::collection::vec((0i64..8, 0usize..a_ids.len().max(1), cell), 0..=n).prop_map(
+        move |rows| {
+            let mut seen = BTreeSet::new();
+            rows.into_iter()
+                .filter(|(id, _, _)| seen.insert(*id))
+                .map(|(id, ai, v)| vec![Some(id), Some(a_ids[ai]), v])
+                .collect()
+        },
+    )
 }
 
 fn batch(def: &TableDef, rows: &Rows) -> (Arc<Schema>, RecordBatch) {
@@ -320,7 +449,7 @@ fn project(row: &[String], cols: &ColSet) -> Vec<String> {
     cols.iter().map(|c| row[*c].clone()).collect()
 }
 
-fn check(a: &Analyzed, rows: &[Vec<String>]) -> Result<(), String> {
+fn check(a: &Analyzed, rows: &[Vec<String>], data: &[Rows]) -> Result<(), String> {
     let f = &a.facts;
     for k in &f.keys {
         let mut seen = BTreeSet::new();
@@ -350,6 +479,64 @@ fn check(a: &Analyzed, rows: &[Vec<String>]) -> Result<(), String> {
             return Err(format!("column {c} inferred non-null has a null"));
         }
     }
+    let table = |rel: &cardinal_dbt::RelationId| -> (&TableDef, &Rows) {
+        let i = TABLES
+            .iter()
+            .position(|t| rel.0 == format!("source.test.{}", t.name))
+            .unwrap_or_else(|| panic!("unknown relation {rel}"));
+        (&TABLES[i], &data[i])
+    };
+    let cell = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(|| "∅".into());
+    let value = |def: &TableDef, row: &[Option<i64>], name: &str| {
+        cell(row[def.cols.iter().position(|c| *c == name).expect("column")])
+    };
+    for c in &f.covers {
+        let (def, trows) = table(&c.relation);
+        for r in trows {
+            let found = rows.iter().any(|t| {
+                c.pairs
+                    .iter()
+                    .all(|(col, name)| t[*col] == value(def, r, name))
+            });
+            if !found {
+                return Err(format!(
+                    "covers {} {:?} fails: row {r:?} is missing",
+                    c.relation, c.pairs
+                ));
+            }
+        }
+    }
+    for w in &f.within {
+        let (def, trows) = table(&w.relation);
+        for t in rows {
+            if w.pairs.iter().all(|(col, _)| t[*col] == "∅") {
+                continue;
+            }
+            let found = trows.iter().any(|r| {
+                w.pairs
+                    .iter()
+                    .all(|(col, name)| t[*col] == value(def, r, name))
+            });
+            if !found {
+                return Err(format!(
+                    "within {} {:?} fails: output row {t:?} is not in it",
+                    w.relation, w.pairs
+                ));
+            }
+        }
+    }
+    for (rc, p) in &f.ranks {
+        let mut parts: HashMap<Vec<String>, bool> = HashMap::new();
+        for t in rows {
+            let e = parts.entry(project(t, p)).or_default();
+            *e |= t[*rc] == "1";
+        }
+        if let Some((k, _)) = parts.iter().find(|(_, one)| !**one) {
+            return Err(format!(
+                "rank column {rc} has no 1 in partition {p:?} = {k:?}"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -358,15 +545,18 @@ proptest! {
 
     #[test]
     fn inferred_facts_hold(
-        a in table_strategy(&TABLES[0]),
+        (a, d) in table_strategy(&TABLES[0]).prop_flat_map(|a| {
+            let d = d_strategy(&a);
+            (Just(a), d)
+        }),
         b in table_strategy(&TABLES[1]),
         c in table_strategy(&TABLES[2]),
         u in table_strategy(&TABLES[3]),
     ) {
-        let data = vec![a, b, c, u];
+        let data = vec![a, b, c, u, d];
         for q in analyzed() {
             let rows = execute(&data, &q.sql);
-            if let Err(e) = check(q, &rows) {
+            if let Err(e) = check(q, &rows, &data) {
                 prop_assert!(false, "unsound for `{}`: {e}\ninput: {data:?}", q.sql);
             }
         }

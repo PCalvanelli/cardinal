@@ -5,7 +5,7 @@ use crate::evidence::EvidenceId;
 use cardinal_dbt::RelationId;
 use cardinal_sql::SqlSpan;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Column positions in a plan node's schema.
@@ -13,6 +13,71 @@ pub type ColSet = BTreeSet<usize>;
 
 pub const MAX_KEYS: usize = 8;
 pub const MAX_FDS: usize = 512;
+pub const MAX_INDS: usize = 48;
+
+/// An inclusion dependency between a plan node and a named relation: pairs of (node
+/// column, relation column name), sorted by node column. Comparisons are null-safe
+/// (IS NOT DISTINCT FROM), which keeps every rule sound under projection.
+///
+/// As a `covers` fact: every row r of the relation has a node row t with
+/// t[cols] = r[names], so no row of the relation was lost.
+///
+/// As a `within` fact: every node row t whose paired columns are not all null has a row
+/// r of the relation with r[names] = t[cols], so the node's values come from it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ind {
+    pub relation: RelationId,
+    pub pairs: Vec<(usize, String)>,
+    pub why: EvidenceId,
+}
+
+impl Ind {
+    /// Move to new column positions; pairs whose column has no new position are dropped
+    /// (both kinds of fact survive projection). None when no pair is left.
+    pub fn remap(&self, f: impl Fn(usize) -> Option<usize>) -> Option<Ind> {
+        let mut pairs: Vec<(usize, String)> = self
+            .pairs
+            .iter()
+            .filter_map(|(c, n)| f(*c).map(|c| (c, n.clone())))
+            .collect();
+        pairs.sort();
+        pairs.dedup();
+        (!pairs.is_empty()).then(|| Ind {
+            relation: self.relation.clone(),
+            pairs,
+            why: self.why,
+        })
+    }
+
+    /// The node column paired with the relation's column `name`.
+    pub fn col_for(&self, name: &str) -> Option<usize> {
+        self.pairs.iter().find(|(_, n)| n == name).map(|(c, _)| *c)
+    }
+
+    pub fn has_pair(&self, col: usize, name: &str) -> bool {
+        self.pairs.iter().any(|(c, n)| *c == col && n == name)
+    }
+}
+
+/// Where rows of a relation can be lost: a filter, an inner join, a LIMIT.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LossSite {
+    /// The model whose SQL drops the rows.
+    pub model: RelationId,
+    /// In that model's compiled SQL.
+    pub span: Option<SqlSpan>,
+    /// "filter `status = 'complete'`", "inner join on customer_id".
+    pub what: String,
+    /// Why the analysis could not show that no rows are lost, when there is more to say.
+    pub because: Option<String>,
+}
+
+/// Rows of `relation` may be lost at `site`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RowLoss {
+    pub relation: RelationId,
+    pub site: LossSite,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Key {
@@ -130,6 +195,16 @@ pub struct RelationFacts {
     pub status: GrainStatus,
     /// Per column: the nearest join below this node where that column's rows repeat.
     pub repeats: Vec<Option<Arc<JoinSite>>>,
+    /// Relations every row of which appears in this node.
+    pub covers: Vec<Ind>,
+    /// Relations this node's values come from.
+    pub within: Vec<Ind>,
+    /// Columns computed by row_number, rank or dense_rank, with their partition: each
+    /// partition has a row where the column is 1.
+    pub ranks: Vec<(usize, ColSet)>,
+    /// Evidence for non-null columns that rest on a declaration. A column in `not_null`
+    /// with no entry here is proven by the SQL.
+    pub nn_why: BTreeMap<usize, EvidenceId>,
 }
 
 impl RelationFacts {
@@ -141,7 +216,56 @@ impl RelationFacts {
             not_null: ColSet::new(),
             status: GrainStatus::Unknown(reason),
             repeats: vec![None; width],
+            covers: vec![],
+            within: vec![],
+            ranks: vec![],
+            nn_why: BTreeMap::new(),
         }
+    }
+
+    /// Like `closure`, also returning the evidence of every dependency and key that
+    /// fired. A superset of what the result needs, so assumptions are never missed.
+    pub fn closure_why(&self, x: &ColSet) -> (ColSet, Vec<EvidenceId>) {
+        let mut c = x.clone();
+        let mut why = Vec::new();
+        loop {
+            let before = c.len();
+            for f in &self.fds {
+                if f.lhs.is_subset(&c) && !f.rhs.is_subset(&c) {
+                    c.extend(f.rhs.iter().copied());
+                    why.push(f.why);
+                }
+            }
+            if let Some(k) = self.keys.iter().find(|k| k.cols.is_subset(&c)) {
+                why.push(k.why);
+                return (self.all(), why);
+            }
+            if c.len() == before {
+                return (c, why);
+            }
+        }
+    }
+
+    /// The evidence that `x` is a superkey, or None if it is not one.
+    pub fn superkey_why(&self, x: &ColSet) -> Option<Vec<EvidenceId>> {
+        let (c, why) = self.closure_why(x);
+        self.keys
+            .iter()
+            .any(|k| k.cols.is_subset(&c))
+            .then_some(why)
+    }
+
+    /// Evidence for non-null columns `cols` that rest on declarations.
+    pub fn not_null_why(&self, cols: &ColSet) -> Vec<EvidenceId> {
+        cols.iter()
+            .filter_map(|c| self.nn_why.get(c).copied())
+            .collect()
+    }
+
+    /// Mark `c` non-null as proven by the SQL.
+    pub fn prove_not_null(&mut self, c: usize) {
+        self.not_null.insert(c);
+        self.nn_why.remove(&c);
     }
 
     pub fn all(&self) -> ColSet {
@@ -272,6 +396,10 @@ impl RelationFacts {
         if self.repeats.len() < width {
             self.repeats.resize(width, None);
         }
+        self.covers = dedup_inds(std::mem::take(&mut self.covers));
+        self.within = dedup_inds(std::mem::take(&mut self.within));
+        let nn = self.not_null.clone();
+        self.nn_why.retain(|c, _| nn.contains(c));
     }
 
     /// Set status from the inputs' combined status, given the keys now known.
@@ -287,6 +415,24 @@ impl RelationFacts {
             }
         };
     }
+}
+
+/// Drop inclusion facts implied by another for the same relation with the same
+/// evidence (a subset of its pairs), and cap the count.
+pub fn dedup_inds(mut v: Vec<Ind>) -> Vec<Ind> {
+    v.sort_by(|a, b| b.pairs.len().cmp(&a.pairs.len()));
+    let mut out: Vec<Ind> = Vec::new();
+    for i in v {
+        if !out.iter().any(|o| {
+            o.relation == i.relation
+                && (o.why == i.why || o.pairs == i.pairs)
+                && i.pairs.iter().all(|p| o.pairs.contains(p))
+        }) {
+            out.push(i);
+        }
+    }
+    out.truncate(MAX_INDS);
+    out
 }
 
 pub fn closure(width: usize, keys: &[Key], fds: &[Fd], x: &ColSet) -> ColSet {
@@ -362,6 +508,10 @@ mod tests {
             not_null: ColSet::new(),
             status: GrainStatus::Known,
             repeats: vec![None; 4],
+            covers: vec![],
+            within: vec![],
+            ranks: vec![],
+            nn_why: BTreeMap::new(),
         };
         assert_eq!(f.closure(&set(&[0])), set(&[0, 2]));
         assert!(f.is_superkey(&set(&[0, 1])));
