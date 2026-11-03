@@ -26,7 +26,11 @@ impl TableLookup for Orders {
 fn key_expr(adapter: &str, ty: &str) -> String {
     let field = |c: &str| format!("coalesce(cast({c} as {ty}), '_dbt_utils_surrogate_key_null_')");
     let concat = if matches!(adapter, "databricks") {
-        format!("concat({}, '-', {})", field("order_id"), field("customer_id"))
+        format!(
+            "concat({}, '-', {})",
+            field("order_id"),
+            field("customer_id")
+        )
     } else {
         format!("{} || '-' || {}", field("order_id"), field("customer_id"))
     };
