@@ -26,14 +26,104 @@ error[G001]: aggregation fans out
   = see: derive explain G001
 ```
 
-## Quick start
+## Getting started
+
+### 1. Install
+
+Derive is built from source for now. `rustup` installs the pinned toolchain (Rust 1.94)
+automatically on the first build.
 
 ```sh
+git clone https://github.com/PCalvanelli/derive
+cd derive
 cargo install --path crates/derive-cli
+derive --version   # derive 0.1.0-beta.1
+```
+
+### 2. Try it on the bundled example
+
+`fixtures/shop` is a small dbt project whose compiled artifacts are checked in, so you can
+run Derive without installing dbt or connecting to a warehouse:
+
+```sh
+derive check --project-dir fixtures/shop
+```
+
+(If it says the manifest is stale, git gave the checked-in files newer timestamps than
+the manifest. Run it with `DERIVE_ALLOW_STALE=1` to skip that check.)
+
+It reports four findings, each planted on purpose, and exits with 1 because one of them
+is an error:
+
+```
+error[G001]: aggregation fans out
+ --> models/marts/daily_revenue.sql:4:24
+...
+warning[G002]: declared key (customer_id) is not proven by the SQL
+ --> models/marts/latest_order.sql
+...
+Analyzed 12 models in 0.02s: 11 with known grain (92%).
+Findings: 1 error, 3 warnings (G001 ×1, G002 ×1, G003 ×1, G005 ×1); 1 below --min-severity, 1 suppressed.
+Next: declare grain on 1 source to cover 1 more model: shop.events (see derive coverage).
+```
+
+To see why the error happens, look at the grain of the model that `daily_revenue` reads:
+
+```sh
+derive describe order_lines --project-dir fixtures/shop
+```
+
+```
+grain   (order_id, line_id)
+        proven: one-to-many join on order_id; key of shop.order_items from meta.derive.grain
+
+column         native grain          nulls
+order_id       (order_id)            never
+line_id        (order_id, line_id)   possible
+shipping_fee   (order_id)            possible
+line_amount    (order_id, line_id)   possible
+...
+```
+
+`order_lines` has one row per order line, but `shipping_fee` belongs to the order, so it
+repeats on every line of that order. Summing it per day counts each order's fee once per
+line. `derive explain G001` prints the full explanation, with a broken and a fixed query.
+
+### 3. Run it on your own project
+
+Derive reads `target/manifest.json` (models and compiled SQL) and `target/catalog.json`
+(column types), so generate both first:
+
+```sh
 cd your-dbt-project
 dbt compile && dbt docs generate
+derive init       # optional: writes derive.toml with the detected dialect
 derive check
+derive coverage   # which sources to declare keys on to cover the most models
 ```
+
+Re-run `dbt compile` after you edit models. If the manifest is older than your SQL, Derive
+reports it instead of checking stale code.
+
+Most models in a new project show unknown grain at first because Derive has nothing to
+start from. Declare keys on your sources (see [Declaring keys](#declaring-keys)) in the
+order `derive coverage` lists them, and each one lets Derive prove grain for every model
+downstream.
+
+### 4. Add it to CI
+
+On an existing project, record today's findings in a baseline so CI fails only on new
+ones:
+
+```sh
+derive check --update-baseline                    # writes .derive/baseline.json; commit it
+derive check --baseline .derive/baseline.json     # in CI: exits 1 only on new errors
+```
+
+Add `--format sarif --output derive.sarif` to upload findings to GitHub code scanning, or
+`--format json` for other tools.
+
+### Commands
 
 | Command | What it does |
 | --- | --- |
