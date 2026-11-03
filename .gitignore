@@ -1,5 +1,5 @@
 /target
-**/.derive/cache/
+**/.cardinal/cache/
 fixtures/*/warehouse.duckdb*
 fixtures/*/logs/
 fixtures/*/target/*

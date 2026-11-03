@@ -6,7 +6,7 @@ models:
         tests: [unique]
   - name: order_lines
     meta:
-      derive:
+      cardinal:
         grain: [order_id, line_id]
   - name: latest_order
     columns:

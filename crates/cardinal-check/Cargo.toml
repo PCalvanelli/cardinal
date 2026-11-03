@@ -1,0 +1,13 @@
+[package]
+name = "cardinal-check"
+description = "Cardinal's grain checks, G001 to G007"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cardinal-sql.workspace = true
+cardinal-dbt.workspace = true
+cardinal-grain.workspace = true
+cardinal-diag.workspace = true
+serde.workspace = true

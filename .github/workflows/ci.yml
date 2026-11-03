@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  DERIVE_ALLOW_STALE: "1"
+  CARDINAL_ALLOW_STALE: "1"
 
 jobs:
   test:
@@ -21,9 +21,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Rule, golden and unit tests
-        run: cargo test --workspace --exclude derive-grain
+        run: cargo test --workspace --exclude cardinal-grain
       - name: Grain rule tests
-        run: cargo test -p derive-grain --test rules --lib
+        run: cargo test -p cardinal-grain --test rules --lib
 
   soundness:
     # Any failure here is a release blocker.
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.94
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --release -p derive-grain --test soundness -- --nocapture
+      - run: cargo test --release -p cardinal-grain --test soundness -- --nocapture
 
   speed:
     # Fails if the developer-experience speed targets regress.
@@ -41,10 +41,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.94
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --release -p derive-cli --test speed -- --ignored --nocapture
+      - run: cargo test --release -p cardinal-cli --test speed -- --ignored --nocapture
 
   dogfood:
-    # Derive runs on its own fixture project and uploads SARIF to code scanning.
+    # Cardinal runs on its own fixture project and uploads SARIF to code scanning.
     runs-on: ubuntu-latest
     # Setting permissions replaces the defaults, so contents: read is needed to check out.
     permissions:
@@ -54,12 +54,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.94
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p derive-cli
-      - name: derive check (findings are expected in the fixture)
-        run: ./target/release/derive check --project-dir fixtures/shop --format sarif --output derive.sarif || test $? -eq 1
+      - run: cargo build --release -p cardinal-cli
+      - name: cardinal check (findings are expected in the fixture)
+        run: ./target/release/cardinal check --project-dir fixtures/shop --format sarif --output cardinal.sarif || test $? -eq 1
       - uses: github/codeql-action/upload-sarif@v3
         # Code scanning on a private repository needs GitHub Advanced Security.
         continue-on-error: true
         with:
-          sarif_file: derive.sarif
-          category: derive
+          sarif_file: cardinal.sarif
+          category: cardinal

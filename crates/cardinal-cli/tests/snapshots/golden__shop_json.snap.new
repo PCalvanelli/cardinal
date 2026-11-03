@@ -1,0 +1,155 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+assertion_line: 84
+expression: json_without_timing(&out)
+---
+{
+  "cardinal_version": "<version>",
+  "findings": [
+    {
+      "code": "G003",
+      "column": 1,
+      "end_column": 71,
+      "end_line": 5,
+      "evidence": [
+        "many-to-many join on customer_id"
+      ],
+      "file": "models/marts/customer_promos.sql",
+      "fingerprint": "join \"warehouse\".\"shop\".\"promos\" p on o.customer_id = p.customer_id",
+      "fix": {
+        "message": "reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)",
+        "replacement": null
+      },
+      "label": "neither stg_orders (customer_id) nor shop.promos (customer_id) is unique",
+      "line": 5,
+      "message": "many-to-many join",
+      "model": "model.shop.customer_promos",
+      "notes": [
+        "stg_orders has grain (order_id)",
+        "shop.promos has grain (customer_id, promo_code)",
+        "every pair of matching rows becomes one output row"
+      ],
+      "related": [],
+      "severity": "warning"
+    },
+    {
+      "code": "G005",
+      "column": 38,
+      "end_column": 99,
+      "end_line": 5,
+      "evidence": [],
+      "file": "models/marts/customer_summary.sql",
+      "fingerprint": "g001 stale, nothing fans out here",
+      "fix": {
+        "message": "remove the comment",
+        "replacement": null
+      },
+      "label": "allow(G001) no longer matches any finding",
+      "line": 5,
+      "message": "suppression matches no finding",
+      "model": "model.shop.customer_summary",
+      "notes": [],
+      "related": [],
+      "severity": "warning"
+    },
+    {
+      "code": "G001",
+      "column": 24,
+      "end_column": 41,
+      "end_line": 4,
+      "evidence": [
+        "shipping_fee is determined by (order_id)",
+        "(order_id) plus the GROUP BY columns is not a key of the aggregate input",
+        "one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain"
+      ],
+      "file": "models/marts/daily_revenue.sql",
+      "fingerprint": "sum(shipping_fee)",
+      "fix": {
+        "message": "sum shipping_fee per (order_id) before the join, or read it from a relation at that grain",
+        "replacement": null
+      },
+      "label": "shipping_fee is determined by (order_id)",
+      "line": 4,
+      "message": "aggregation fans out",
+      "model": "model.shop.daily_revenue",
+      "notes": [
+        "order_lines has grain (order_id, line_id), proven: one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain"
+      ],
+      "related": [
+        {
+          "column": 1,
+          "end_column": 53,
+          "end_line": 9,
+          "file": "models/intermediate/order_lines.sql",
+          "line": 9,
+          "message": "one-to-many: rows repeat per row of int_order_items"
+        }
+      ],
+      "severity": "error"
+    },
+    {
+      "code": "G002",
+      "column": null,
+      "end_column": null,
+      "end_line": null,
+      "evidence": [
+        "key of shop.orders from test source_unique_shop_orders_order_id"
+      ],
+      "file": "models/marts/latest_order.sql",
+      "fingerprint": "(customer_id)",
+      "fix": {
+        "message": "declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup",
+        "replacement": null
+      },
+      "label": "the SQL proves grain (order_id)",
+      "line": null,
+      "message": "declared key (customer_id) is not proven by the SQL",
+      "model": "model.shop.latest_order",
+      "notes": [
+        "test unique_latest_order_customer_id remains the only guarantee"
+      ],
+      "related": [],
+      "severity": "warning"
+    },
+    {
+      "code": "G004",
+      "column": null,
+      "end_column": null,
+      "end_line": null,
+      "evidence": [],
+      "file": "models/sources.yml",
+      "fingerprint": "sourcewithoutkey(relationid(\"source.shop.shop.events\"))",
+      "fix": {
+        "message": "declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test",
+        "replacement": null
+      },
+      "label": "",
+      "line": null,
+      "message": "grain unknown for 1 model: source shop.events declares no key",
+      "model": "source.shop.shop.events",
+      "notes": [
+        "affects order_events",
+        "shop.events declares no key"
+      ],
+      "related": [],
+      "severity": "info"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "summary": {
+    "baselined": 0,
+    "below_min_severity": 0,
+    "cache_hits": 0,
+    "elapsed_ms": 0,
+    "findings_by_code": {
+      "G001": 1,
+      "G002": 1,
+      "G003": 1,
+      "G004": 1,
+      "G005": 1
+    },
+    "models_analyzed": 12,
+    "models_with_known_grain": 11,
+    "suppressed": 1
+  }
+}

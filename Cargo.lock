@@ -452,6 +452,94 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "cardinal-cache"
+version = "0.1.0-beta.1"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cardinal-check"
+version = "0.1.0-beta.1"
+dependencies = [
+ "cardinal-dbt",
+ "cardinal-diag",
+ "cardinal-grain",
+ "cardinal-sql",
+ "serde",
+]
+
+[[package]]
+name = "cardinal-cli"
+version = "0.1.0-beta.1"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "cardinal-cache",
+ "cardinal-check",
+ "cardinal-dbt",
+ "cardinal-diag",
+ "cardinal-grain",
+ "cardinal-sql",
+ "clap",
+ "criterion",
+ "insta",
+ "notify",
+ "rayon",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "cardinal-dbt"
+version = "0.1.0-beta.1"
+dependencies = [
+ "petgraph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cardinal-diag"
+version = "0.1.0-beta.1"
+dependencies = [
+ "cardinal-sql",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cardinal-grain"
+version = "0.1.0-beta.1"
+dependencies = [
+ "cardinal-dbt",
+ "cardinal-sql",
+ "datafusion",
+ "proptest",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "cardinal-sql"
+version = "0.1.0-beta.1"
+dependencies = [
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "datafusion-functions-nested",
+ "datafusion-functions-window",
+ "datafusion-sql",
+ "serde",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1365,94 +1453,6 @@ dependencies = [
  "log",
  "regex",
  "sqlparser",
-]
-
-[[package]]
-name = "derive-cache"
-version = "0.1.0-beta.1"
-dependencies = [
- "blake3",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "derive-check"
-version = "0.1.0-beta.1"
-dependencies = [
- "derive-dbt",
- "derive-diag",
- "derive-grain",
- "derive-sql",
- "serde",
-]
-
-[[package]]
-name = "derive-cli"
-version = "0.1.0-beta.1"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "criterion",
- "derive-cache",
- "derive-check",
- "derive-dbt",
- "derive-diag",
- "derive-grain",
- "derive-sql",
- "insta",
- "notify",
- "rayon",
- "serde",
- "serde_json",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "derive-dbt"
-version = "0.1.0-beta.1"
-dependencies = [
- "petgraph",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "derive-diag"
-version = "0.1.0-beta.1"
-dependencies = [
- "derive-sql",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "derive-grain"
-version = "0.1.0-beta.1"
-dependencies = [
- "datafusion",
- "derive-dbt",
- "derive-sql",
- "proptest",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "derive-sql"
-version = "0.1.0-beta.1"
-dependencies = [
- "datafusion-common",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
- "datafusion-functions-window",
- "datafusion-sql",
- "serde",
 ]
 
 [[package]]
@@ -3330,7 +3330,7 @@ name = "xtask"
 version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
- "derive-cli",
+ "cardinal-cli",
  "serde_json",
 ]
 

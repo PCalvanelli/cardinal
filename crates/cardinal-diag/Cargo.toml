@@ -1,0 +1,11 @@
+[package]
+name = "cardinal-diag"
+description = "Diagnostics for Cardinal: types, source mapping, baselines, suppressions, renderers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cardinal-sql.workspace = true
+serde.workspace = true
+serde_json.workspace = true

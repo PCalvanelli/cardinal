@@ -9,13 +9,13 @@ sources:
             tests: [unique, not_null]
       - name: order_items
         meta:
-          derive:
+          cardinal:
             grain: [order_id, line_id]
       - name: customers
         description: CDC feed, one row per change
       - name: promos
         meta:
-          derive:
+          cardinal:
             grain: [customer_id, promo_code]
       - name: refunds
         columns:

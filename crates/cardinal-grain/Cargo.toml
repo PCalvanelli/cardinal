@@ -1,0 +1,16 @@
+[package]
+name = "cardinal-grain"
+description = "Grain inference: keys, functional dependencies and nullability per plan node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cardinal-sql.workspace = true
+cardinal-dbt.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+datafusion.workspace = true
+tokio.workspace = true
