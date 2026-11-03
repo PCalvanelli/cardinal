@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/built%20for-dbt-FF694B?logo=dbt&logoColor=white" alt="Built for dbt">
 </p>
 
-> **Beta (v0.1.0-beta.2).** Output, flags and config may change between beta releases.
+> **Beta (v0.1.0-beta.3).** Output, flags and config may change between beta releases.
 
 Cardinal checks that your dbt models count every row correctly. It reads the SQL dbt
 compiles and finds rows that get **repeated** (a join that fans out and inflates a sum)
