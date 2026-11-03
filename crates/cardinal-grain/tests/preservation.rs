@@ -282,3 +282,54 @@ fn using_join_column_stands_for_both_sides() {
     assert!(v.exactly_once(), "{v:?}");
     assert_eq!(v.cols, vec!["order_id", "line_id"]);
 }
+
+/// orders with a second unique column, so `order_id` can be dropped while the
+/// output still identifies each order.
+fn two_keys() -> GrainCase {
+    grain_case()
+        .table_keys(
+            "orders2",
+            &["order_id", "order_number", "fee"],
+            &[key(&["order_id"]), key(&["order_number"])],
+        )
+        .declare("orders2", &["order_id", "order_number"], &[])
+}
+
+#[test]
+fn projection_keeping_the_key_is_exactly_once() {
+    let v = two_keys()
+        .sql("select order_id, fee from orders2")
+        .verdict("orders2");
+    assert!(v.exactly_once(), "{v:?}");
+}
+
+#[test]
+fn projection_dropping_the_key_keeps_coverage_through_an_alternate_key() {
+    // order_number determines order_id, so every order is still present once.
+    let v = two_keys()
+        .sql("select order_number, fee from orders2")
+        .verdict("orders2");
+    assert!(v.exactly_once(), "{v:?}");
+}
+
+#[test]
+fn cte_dropping_the_key_keeps_coverage_through_an_alternate_key() {
+    let v = two_keys()
+        .sql(
+            "with o as (select order_id, order_number, fee from orders2)
+             select order_number, fee from o",
+        )
+        .verdict("orders2");
+    assert!(v.exactly_once(), "{v:?}");
+}
+
+#[test]
+fn projection_dropping_every_key_is_not_proven() {
+    let v = two_keys().sql("select fee from orders2").verdict("orders2");
+    assert!(!v.at_most_once.is_proven(), "{v:?}");
+    assert_eq!(
+        v.key,
+        vec!["order_id"],
+        "falls back to the first key: {v:?}"
+    );
+}
