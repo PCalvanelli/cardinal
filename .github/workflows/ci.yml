@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  DERIVE_ALLOW_STALE: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rule, golden and unit tests
+        run: cargo test --workspace --exclude derive-grain
+      - name: Grain rule tests
+        run: cargo test -p derive-grain --test rules --lib
+
+  soundness:
+    # Any failure here is a release blocker.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release -p derive-grain --test soundness -- --nocapture
+
+  speed:
+    # Fails if the developer-experience speed targets regress.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release -p derive-cli --test speed -- --ignored --nocapture
+
+  dogfood:
+    # Derive runs on its own fixture project and uploads SARIF to code scanning.
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p derive-cli
+      - name: derive check (findings are expected in the fixture)
+        run: ./target/release/derive check --project-dir fixtures/shop --format sarif --output derive.sarif || test $? -eq 1
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: derive.sarif
+          category: derive

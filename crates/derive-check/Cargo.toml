@@ -1,0 +1,13 @@
+[package]
+name = "derive-check"
+description = "Derive's grain checks, G001 to G005"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+derive-sql.workspace = true
+derive-dbt.workspace = true
+derive-grain.workspace = true
+derive-diag.workspace = true
+serde.workspace = true

@@ -1,0 +1,7 @@
+/target
+**/.derive/cache/
+fixtures/*/warehouse.duckdb*
+fixtures/*/logs/
+fixtures/*/target/*
+!fixtures/*/target/manifest.json
+!fixtures/*/target/catalog.json

@@ -1,0 +1,153 @@
+//! G004: a model's grain is unknown. Reported once per root cause (for example one
+//! undeclared source), not once per affected model.
+
+use derive_dbt::{Kind, Project, RelationId};
+use derive_diag::{Code, Diagnostic, Fix, Label, normalize_text};
+use derive_grain::{GrainStatus, UnknownReason};
+use std::collections::BTreeMap;
+
+pub struct UnknownGrainModel {
+    pub id: RelationId,
+    pub status: GrainStatus,
+}
+
+/// Group models with unknown grain by root cause. Returns one finding per cause, plus
+/// the causes ranked by how many models declaring them would unlock (for `coverage`).
+pub fn unknown_grain(
+    project: &Project,
+    models: &[UnknownGrainModel],
+    statuses: &BTreeMap<RelationId, GrainStatus>,
+) -> Vec<(RelationId, UnknownReason, Vec<RelationId>, Diagnostic)> {
+    let mut groups: BTreeMap<(RelationId, String), (UnknownReason, Vec<RelationId>)> =
+        BTreeMap::new();
+    for m in models {
+        let GrainStatus::Unknown(reason) = &m.status else {
+            continue;
+        };
+        let root = root_of(project, &m.id, reason, statuses);
+        let key = (root.clone(), format!("{reason:?}"));
+        groups
+            .entry(key)
+            .or_insert_with(|| (reason.clone(), vec![]))
+            .1
+            .push(m.id.clone());
+    }
+    let mut out = Vec::new();
+    for ((root, _), (reason, mut affected)) in groups {
+        affected.sort();
+        let Some(rel) = project.get(&root) else {
+            continue;
+        };
+        let names: Vec<String> = affected
+            .iter()
+            .map(|a| {
+                project
+                    .get(a)
+                    .map(|r| r.display.clone())
+                    .unwrap_or(a.0.clone())
+            })
+            .collect();
+        let n = affected.len();
+        let plural = if n == 1 { "model" } else { "models" };
+        let display = |r: &RelationId| {
+            project
+                .get(r)
+                .map(|x| x.display.clone())
+                .unwrap_or(r.0.clone())
+        };
+        let (message, help) = match &reason {
+            UnknownReason::SourceWithoutKey(_) => {
+                let what = if rel.kind == Kind::Seed {
+                    "seed"
+                } else {
+                    "source"
+                };
+                (
+                    format!(
+                        "grain unknown for {n} {plural}: {what} {} declares no key",
+                        rel.display
+                    ),
+                    format!(
+                        "declare its grain with meta: {{derive: {{grain: [...]}}}} on the {what}, or add a unique test"
+                    ),
+                )
+            }
+            UnknownReason::PlanError(_) => (
+                format!(
+                    "grain unknown for {n} {plural}: {} could not be planned",
+                    rel.display
+                ),
+                format!("fix the E-code reported for {} first", rel.display),
+            ),
+            UnknownReason::PythonModel(_) => (
+                format!(
+                    "grain unknown for {n} {plural}: {} is a Python model",
+                    rel.display
+                ),
+                "declare its grain with meta.derive.grain or a unique test".to_string(),
+            ),
+            UnknownReason::UnsupportedOperator(op) => (
+                format!("grain unknown for {n} {plural}: {op} in {}", rel.display),
+                format!(
+                    "declare the grain of {} with a unique test or meta.derive.grain",
+                    rel.display
+                ),
+            ),
+        };
+        let shown: Vec<String> = names.iter().take(10).cloned().collect();
+        let mut affected_note = format!("affects {}", shown.join(", "));
+        if n > 10 {
+            affected_note.push_str(&format!(" and {} more", n - 10));
+        }
+        let d = Diagnostic {
+            code: Code::G004,
+            severity: Code::G004.default_severity(),
+            relation: root.0.clone(),
+            message,
+            primary: Label {
+                file: rel.file.clone(),
+                span: None,
+                message: String::new(),
+            },
+            secondary: vec![],
+            notes: vec![affected_note, reason.describe(&display)],
+            fix: Some(Fix {
+                message: help,
+                replacement: None,
+            }),
+            evidence: vec![],
+            fingerprint: normalize_text(&format!("{reason:?}")),
+        };
+        out.push((root, reason, affected, d));
+    }
+    out.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then(a.0.cmp(&b.0)));
+    out
+}
+
+/// The relation a model's unknown grain comes from.
+fn root_of(
+    project: &Project,
+    id: &RelationId,
+    reason: &UnknownReason,
+    statuses: &BTreeMap<RelationId, GrainStatus>,
+) -> RelationId {
+    match reason {
+        UnknownReason::SourceWithoutKey(r)
+        | UnknownReason::PlanError(r)
+        | UnknownReason::PythonModel(r) => r.clone(),
+        UnknownReason::UnsupportedOperator(_) => {
+            // Walk up while a parent carries the same reason; `seen` stops at cycles.
+            let mut cur = id.clone();
+            let mut seen = std::collections::BTreeSet::from([cur.clone()]);
+            while let Some(parent) = project.get(&cur).and_then(|rel| {
+                rel.depends_on.iter().find(|p| {
+                    !seen.contains(*p) && statuses.get(*p).and_then(|s| s.reason()) == Some(reason)
+                })
+            }) {
+                cur = parent.clone();
+                seen.insert(cur.clone());
+            }
+            cur
+        }
+    }
+}

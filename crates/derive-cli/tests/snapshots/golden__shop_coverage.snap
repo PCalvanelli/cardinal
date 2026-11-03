@@ -1,0 +1,8 @@
+---
+source: crates/derive-cli/tests/golden.rs
+expression: out
+---
+11 of 12 models have known grain (92%); 12 planned without E-codes (100%).
+
+To cover the rest, in order of models unlocked:
+   1. shop.events declares no key   1 model

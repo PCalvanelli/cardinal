@@ -1,0 +1,19 @@
+---
+source: crates/derive-cli/tests/golden.rs
+expression: out
+---
+model.shop.order_lines  (models/intermediate/order_lines.sql)
+
+grain   (order_id, line_id)
+        proven: one-to-many join on order_id; key of shop.order_items from meta.derive.grain
+
+column         native grain          nulls
+order_id       (order_id)            never
+line_id        (order_id, line_id)   possible
+customer_id    (order_id)            possible
+order_date     (order_id)            possible
+shipping_fee   (order_id)            possible
+line_amount    (order_id, line_id)   possible
+
+joins
+  stg_orders -> int_order_items on order_id    one-to-many

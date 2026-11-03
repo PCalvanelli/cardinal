@@ -1,0 +1,25 @@
+version: 2
+sources:
+  - name: shop
+    schema: shop
+    tables:
+      - name: orders
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+      - name: order_items
+        meta:
+          derive:
+            grain: [order_id, line_id]
+      - name: customers
+        description: CDC feed, one row per change
+      - name: promos
+        meta:
+          derive:
+            grain: [customer_id, promo_code]
+      - name: refunds
+        columns:
+          - name: refund_id
+            tests: [unique]
+      - name: events
+        description: no key declared

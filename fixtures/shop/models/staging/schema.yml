@@ -1,0 +1,14 @@
+version: 2
+models:
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        tests: [unique]
+  - name: order_lines
+    meta:
+      derive:
+        grain: [order_id, line_id]
+  - name: latest_order
+    columns:
+      - name: customer_id
+        tests: [unique]
