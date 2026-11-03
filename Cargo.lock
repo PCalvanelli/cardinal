@@ -453,7 +453,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cardinal-cache"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "blake3",
  "serde",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "cardinal-check"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "cardinal-dbt",
  "cardinal-diag",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "cardinal-cli"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "cardinal-dbt"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "petgraph",
  "serde",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "cardinal-diag"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "cardinal-sql",
  "serde",
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "cardinal-grain"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "cardinal-dbt",
  "cardinal-sql",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "cardinal-sql"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "datafusion-common",
  "datafusion-expr",
@@ -3327,7 +3327,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "cardinal-cli",
