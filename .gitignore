@@ -5,3 +5,5 @@ fixtures/*/logs/
 fixtures/*/target/*
 !fixtures/*/target/manifest.json
 !fixtures/*/target/catalog.json
+*.snap.new
+*.pending-snap
