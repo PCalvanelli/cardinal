@@ -80,6 +80,64 @@ expression: json_without_timing(&out)
           "ruleIndex": 4
         },
         {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "adds up counts of distinct customer_id across order_date"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "models/marts/customers_to_date.sql",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 26,
+                  "endLine": 3,
+                  "startColumn": 5,
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "distinct count is summed: adds up counts of distinct customer_id across order_date\nnote: a customer_id that appears with more than one order_date is counted once for each\nhelp: count each customer_id once, on its first order_date, and sum those instead"
+          },
+          "partialFingerprints": {
+            "cardinalFingerprint/v1": "G008:model.shop.customers_to_date:sum(active_customers)"
+          },
+          "properties": {
+            "evidence": [
+              "active_customers counts distinct customer_id per (order_date)",
+              "customer_id does not determine order_date",
+              "the sum's grouping plus the counts' shared columns is not a key of the sum's input"
+            ],
+            "model": "model.shop.customers_to_date"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "counts each customer_id once per (order_date)"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "models/marts/daily_active_customers.sql",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 32,
+                  "endLine": 3,
+                  "startColumn": 5,
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "ruleId": "G008",
+          "ruleIndex": 7
+        },
+        {
           "level": "error",
           "locations": [
             {
@@ -167,6 +225,64 @@ expression: json_without_timing(&out)
           "relatedLocations": [],
           "ruleId": "G002",
           "ruleIndex": 1
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "adds up counts of distinct customer_id across order_date"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "models/marts/monthly_active_customers.sql",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 26,
+                  "endLine": 3,
+                  "startColumn": 5,
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "distinct count is summed: adds up counts of distinct customer_id across order_date\nnote: a customer_id that appears with more than one order_date is counted once for each\nhelp: count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)"
+          },
+          "partialFingerprints": {
+            "cardinalFingerprint/v1": "G008:model.shop.monthly_active_customers:sum(active_customers)"
+          },
+          "properties": {
+            "evidence": [
+              "active_customers counts distinct customer_id per (order_date)",
+              "customer_id does not determine order_date",
+              "(date_trunc('month', order_date)) plus the counts' shared columns is not a key of the sum's input"
+            ],
+            "model": "model.shop.monthly_active_customers"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "counts each customer_id once per (order_date)"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "models/marts/daily_active_customers.sql",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 32,
+                  "endLine": 3,
+                  "startColumn": 5,
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "ruleId": "G008",
+          "ruleIndex": 7
         }
       ],
       "tool": {
@@ -263,6 +379,19 @@ expression: json_without_timing(&out)
               "name": "window order has ties",
               "shortDescription": {
                 "text": "window order has ties"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "distinct count is summed. Run `cardinal explain G008` for details."
+              },
+              "id": "G008",
+              "name": "distinct count is summed",
+              "shortDescription": {
+                "text": "distinct count is summed"
               }
             },
             {

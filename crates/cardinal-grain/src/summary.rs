@@ -3,7 +3,8 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId, NO_EVIDENCE};
 use crate::facts::{
-    ColSet, Fd, GrainStatus, Ind, JoinSite, Key, RelationFacts, RowLoss, UnknownReason,
+    ColSet, DistinctCount, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key, RelationFacts,
+    RowLoss, UnknownReason,
 };
 use cardinal_dbt::{Assumption, DeclOrigin, DeclaredKey, Relation, RelationId};
 use cardinal_sql::datafusion_common::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -49,6 +50,14 @@ pub struct SummaryInd {
     pub assumptions: Vec<Assumption>,
 }
 
+/// A distinct-count column (see `DistinctCount`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryDistinct {
+    pub col: usize,
+    pub agree_on: Vec<usize>,
+    pub site: DistinctSite,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationSummary {
     pub relation: RelationId,
@@ -76,6 +85,9 @@ pub struct RelationSummary {
     /// Where rows of the relations it reads may be lost, here or upstream.
     #[serde(default)]
     pub losses: Vec<RowLoss>,
+    /// Columns holding distinct counts.
+    #[serde(default)]
+    pub distinct: Vec<SummaryDistinct>,
 }
 
 impl RelationSummary {
@@ -190,6 +202,18 @@ impl RelationSummary {
                 .map(|(r, p)| (*r, p.iter().copied().collect()))
                 .collect(),
             nn_why,
+            distinct: self
+                .distinct
+                .iter()
+                .filter(|d| {
+                    d.col < self.columns.len() && d.agree_on.iter().all(|c| *c < self.columns.len())
+                })
+                .map(|d| DistinctCount {
+                    col: d.col,
+                    agree_on: d.agree_on.iter().copied().collect(),
+                    site: Arc::new(d.site.clone()),
+                })
+                .collect(),
         }
     }
 }
@@ -265,6 +289,7 @@ pub fn summary_from_declared(rel: &Relation, unknown: UnknownReason) -> Relation
         within,
         ranks: vec![],
         losses: vec![],
+        distinct: vec![],
     }
 }
 
@@ -462,6 +487,15 @@ pub fn summarize(
             .map(|(r, p)| (*r, p.iter().copied().collect()))
             .collect(),
         losses: vec![],
+        distinct: facts
+            .distinct
+            .iter()
+            .map(|d| SummaryDistinct {
+                col: d.col,
+                agree_on: d.agree_on.iter().copied().collect(),
+                site: (*d.site).clone(),
+            })
+            .collect(),
     };
     (summary, checks)
 }

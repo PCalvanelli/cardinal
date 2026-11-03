@@ -5,13 +5,12 @@
 //! D ∪ G not a superkey of I. Rows sharing D then repeat c within a group, and the
 //! aggregate overcounts.
 
+use crate::sites::{Site, aggregate_sites, col_positions};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity, normalize_text};
 use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts};
 use cardinal_sql::datafusion_common::DFSchema;
-use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-use cardinal_sql::datafusion_expr::expr::AggregateFunction;
-use cardinal_sql::datafusion_expr::{Expr, LogicalPlan, WindowFunctionDefinition};
+use cardinal_sql::datafusion_expr::{Expr, LogicalPlan};
 use cardinal_sql::provider::{FunctionOrigin, Functions};
 use cardinal_sql::{SourceText, SqlSpan};
 
@@ -67,24 +66,6 @@ pub fn classify(name: &str, distinct: bool, functions: &Functions) -> AggClass {
     }
 }
 
-struct Site<'a> {
-    name: String,
-    distinct: bool,
-    args: &'a [Expr],
-    group: ColSet,
-    input: &'a LogicalPlan,
-}
-
-fn col_positions(schema: &DFSchema, exprs: &[Expr]) -> Option<ColSet> {
-    let mut out = ColSet::new();
-    for e in exprs {
-        for c in e.column_refs() {
-            out.insert(schema.maybe_index_of_column(c)?);
-        }
-    }
-    Some(out)
-}
-
 fn is_count_star(name: &str, args: &[Expr]) -> bool {
     name == "count" && args.iter().all(|a| a.column_refs().is_empty())
 }
@@ -95,50 +76,7 @@ impl Check for FanOutAggregation {
     }
 
     fn run(&self, cx: &CheckContext<'_>, model: &AnalyzedModel, out: &mut Vec<Diagnostic>) {
-        let mut sites: Vec<Site<'_>> = Vec::new();
-        let _ = model.plan.apply(|node| {
-            match node {
-                LogicalPlan::Aggregate(a) => {
-                    let schema = a.input.schema();
-                    let Some(group) = col_positions(schema, &a.group_expr) else {
-                        return Ok(TreeNodeRecursion::Continue);
-                    };
-                    for e in &a.aggr_expr {
-                        if let Expr::AggregateFunction(AggregateFunction { func, params }) =
-                            unalias(e)
-                        {
-                            sites.push(Site {
-                                name: func.name().to_string(),
-                                distinct: params.distinct,
-                                args: &params.args,
-                                group: group.clone(),
-                                input: &a.input,
-                            });
-                        }
-                    }
-                }
-                LogicalPlan::Window(w) => {
-                    let schema = w.input.schema();
-                    for e in &w.window_expr {
-                        if let Expr::WindowFunction(wf) = unalias(e)
-                            && let WindowFunctionDefinition::AggregateUDF(u) = &wf.fun
-                            && let Some(group) = col_positions(schema, &wf.params.partition_by)
-                        {
-                            sites.push(Site {
-                                name: u.name().to_string(),
-                                distinct: wf.params.distinct,
-                                args: &wf.params.args,
-                                group,
-                                input: &w.input,
-                            });
-                        }
-                    }
-                }
-                _ => {}
-            }
-            Ok(TreeNodeRecursion::Continue)
-        });
-
+        let sites = aggregate_sites(&model.plan);
         let text = model.text();
         for site in sites {
             if let Some(d) = check_site(cx, model, &text, &site) {
@@ -148,20 +86,13 @@ impl Check for FanOutAggregation {
     }
 }
 
-fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(a) => unalias(&a.expr),
-        o => o,
-    }
-}
-
 fn names(schema: &DFSchema, cols: &ColSet) -> Vec<String> {
     cols.iter()
         .map(|c| schema.field(*c).name().clone())
         .collect()
 }
 
-fn check_site(
+pub(crate) fn check_site(
     cx: &CheckContext<'_>,
     model: &AnalyzedModel,
     text: &SourceText<'_>,

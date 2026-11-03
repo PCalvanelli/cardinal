@@ -126,6 +126,7 @@ fee repeats on every line of its order, so summing it counts the fee once per li
 | G005 | warning | A suppression comment that no longer matches anything |
 | G006 | warning | An incremental model whose `unique_key` isn't unique |
 | G007 | warning | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is arbitrary |
+| G008 | warning | A sum of distinct counts that can overlap, such as daily active users summed into monthly ones |
 | P001 | error | An `exactly_once` contract that isn't proven |
 | P002 | warning | A proven contract that relies on something no test checks |
 | E001–E005 | error | SQL Cardinal could not read (missing, unparseable or unsupported) |

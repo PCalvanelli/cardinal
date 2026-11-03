@@ -3,8 +3,8 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
 use crate::facts::{
-    Cardinality, ColSet, Fd, GrainStatus, Ind, JoinSite, Key, LossSite, MAX_KEYS, RelationFacts,
-    RowLoss, UnknownReason, closure, minimize,
+    Cardinality, ColSet, DistinctCount, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key,
+    LossSite, MAX_KEYS, RelationFacts, RowLoss, UnknownReason, closure, minimize,
 };
 use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
@@ -170,6 +170,45 @@ pub(crate) fn expr_cols(e: &Expr, schema: &DFSchema) -> Option<ColSet> {
         .into_iter()
         .map(|c| col_index(schema, c))
         .collect()
+}
+
+/// Aggregates that count distinct values: summing their results across groups can count
+/// a value once per group.
+pub const DISTINCT_COUNTS: &[&str] = &["approx_distinct", "approx_count_distinct", "hll"];
+
+pub fn is_distinct_count(name: &str, distinct: bool) -> bool {
+    let n = name.to_ascii_lowercase();
+    (n == "count" && distinct) || DISTINCT_COUNTS.contains(&n.as_str())
+}
+
+/// The input column whose values a distinct-count argument counts: the column itself, or
+/// a CASE whose every result is that column or NULL (`case when active then user_id end`).
+/// None for any other expression, since it could map different values to one.
+fn counted_col(e: &Expr, schema: &DFSchema) -> Option<usize> {
+    match unalias(e) {
+        Expr::Column(c) => col_index(schema, c),
+        Expr::Case(case) => {
+            let mut col = None;
+            for (_, then) in &case.when_then_expr {
+                let c = counted_col(then, schema)?;
+                if col.is_some_and(|p| p != c) {
+                    return None;
+                }
+                col = Some(c);
+            }
+            match case.else_expr.as_deref().map(unalias) {
+                None => {}
+                Some(Expr::Literal(v, _)) if v.is_null() => {}
+                Some(other) => {
+                    if counted_col(other, schema)? != col? {
+                        return None;
+                    }
+                }
+            }
+            col
+        }
+        _ => None,
+    }
 }
 
 fn has_nondeterminism(e: &Expr) -> bool {
@@ -413,6 +452,7 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
             })
             .collect(),
         nn_why,
+        distinct: input.distinct.iter().filter_map(|d| d.remap(to)).collect(),
     };
     f.normalize();
     f.settle_status(input.status.clone());
@@ -1024,9 +1064,87 @@ impl Analyzer<'_> {
         });
         f.keys.push(Key { cols: group, why });
         f.repeats = vec![None; f.width];
+        self.distinct_counts(a, &input, &mut f);
         f.normalize();
         f.status = GrainStatus::Known;
         f
+    }
+
+    /// Record each `count(distinct x)` of an aggregate, with the group columns `x`
+    /// determines: two groups that count the same value agree on those. Only when the
+    /// input's grain is fully known, so a missing dependency cannot invent an overlap.
+    fn distinct_counts(&mut self, a: &Aggregate, input: &RelationFacts, f: &mut RelationFacts) {
+        if !input.status.is_known() || input.keys.is_empty() {
+            return;
+        }
+        let schema = a.input.schema();
+        let g = a.group_expr.len();
+        let text = SourceText::new(self.sql);
+        for (j, e) in a.aggr_expr.iter().enumerate() {
+            let Expr::AggregateFunction(af) = unalias(e) else {
+                continue;
+            };
+            let name = af.func.name().to_ascii_lowercase();
+            if !is_distinct_count(&name, af.params.distinct) {
+                continue;
+            }
+            let Some(x) = af
+                .params
+                .args
+                .iter()
+                .map(|a| counted_col(a, schema))
+                .collect::<Option<ColSet>>()
+            else {
+                continue;
+            };
+            if x.is_empty() {
+                continue;
+            }
+            let cl = input.closure(&x);
+            let mut agree_on = ColSet::new();
+            for (i, ge) in a.group_expr.iter().enumerate() {
+                if expr_cols(ge, schema).is_some_and(|c| c.is_subset(&cl)) {
+                    agree_on.insert(i);
+                }
+            }
+            if agree_on.len() == g {
+                // Every group holds its own values: the counts never overlap.
+                continue;
+            }
+            let span = af
+                .params
+                .args
+                .iter()
+                .flat_map(|a| a.column_refs())
+                .find_map(|c| c.spans().first())
+                .and_then(|s| SqlSpan::from_df(&s))
+                .map(|s| text.enclosing_call(s, &name).unwrap_or(s));
+            let per: Vec<String> = a
+                .group_expr
+                .iter()
+                .map(|e| match unalias(e) {
+                    Expr::Column(c) => c.name.clone(),
+                    other => other.schema_name().to_string(),
+                })
+                .collect();
+            let site = DistinctSite {
+                relation: self.relation.clone(),
+                span,
+                counted: column_names(schema, &x),
+                across: per
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !agree_on.contains(i))
+                    .map(|(_, n)| n.clone())
+                    .collect(),
+                per,
+            };
+            f.distinct.push(DistinctCount {
+                col: g + j,
+                agree_on,
+                site: Arc::new(site),
+            });
+        }
     }
 
     fn distinct_on(&mut self, d: &DistinctOn) -> RelationFacts {
@@ -1613,6 +1731,14 @@ impl Analyzer<'_> {
             within,
             ranks,
             nn_why,
+            // A row repeated by the join repeats its whole side, agree_on included, so
+            // the fact holds; the repetition itself is G001's to report.
+            distinct: l
+                .distinct
+                .iter()
+                .cloned()
+                .chain(r.distinct.iter().filter_map(|d| d.remap(|c| Some(c + nl))))
+                .collect(),
         };
         f.normalize();
         f.settle_status(GrainStatus::combine([&l.status, &r.status]));

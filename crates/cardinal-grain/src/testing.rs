@@ -70,6 +70,7 @@ impl Tables {
                 within: vec![],
                 ranks: vec![],
                 losses: vec![],
+                distinct: vec![],
             },
         );
         self.by_name.insert(name.to_string(), id);
@@ -199,6 +200,41 @@ impl GrainCase {
         self
     }
 
+    /// Analyze `sql` as an upstream model named `name`, and make its summary readable
+    /// by later SQL, the way the engine passes facts between models.
+    pub fn model(mut self, name: &str, sql: &str) -> Self {
+        let m = analyze_sql(&self.tables, sql);
+        let id = RelationId(format!("model.test.{name}"));
+        let rel = cardinal_dbt::Relation {
+            id: id.clone(),
+            kind: cardinal_dbt::Kind::Model {
+                materialized: "view".into(),
+            },
+            display: name.into(),
+            package: "test".into(),
+            file: format!("models/{name}.sql"),
+            compiled_sql: Some(sql.into()),
+            raw_sql: Some(sql.into()),
+            compiled_path: None,
+            relation_parts: vec![name.into()],
+            depends_on: vec![],
+            columns: vec![],
+            columns_from: cardinal_dbt::project::ColumnsFrom::Missing,
+            declared_keys: vec![],
+            not_null: Default::default(),
+            references: vec![],
+            exactly_once: vec![],
+            tests: vec![],
+            contract_enforced: false,
+            tags: vec![],
+            incremental: None,
+        };
+        let schema = m.plan.schema().as_arrow().clone();
+        let (summary, _) = crate::summary::summarize(&rel, &schema, m.output(), &m.arena);
+        self.tables.insert_summary(name, summary);
+        self
+    }
+
     /// The verdict for `table` on the model.
     pub fn verdict(&self, table: &str) -> crate::verdict::Verdict {
         let m = self.run();
@@ -291,6 +327,32 @@ impl GrainCase {
                 self.sql
             );
         }
+        self
+    }
+
+    /// `col` is a distinct count whose shared columns are `agree_on`, or (None) carries
+    /// no distinct-count fact.
+    pub fn expect_distinct(self, col: &str, agree_on: Option<&[&str]>) -> Self {
+        let m = self.run();
+        let c = Self::col(&m, col);
+        let got = m
+            .output()
+            .distinct
+            .iter()
+            .find(|d| d.col == c)
+            .map(|d| Self::names(&m, &d.agree_on));
+        let want = agree_on.map(|a| {
+            let mut v: Vec<String> = a.iter().map(|s| s.to_string()).collect();
+            v.sort();
+            v
+        });
+        assert_eq!(
+            got,
+            want,
+            "distinct count {col} for:\n{}\n{}",
+            self.sql,
+            m.plan.display_indent()
+        );
         self
     }
 
