@@ -4,6 +4,8 @@
 
 <h1 align="center">Cardinal</h1>
 
+<p align="center"><b>Proves your dbt models count every row exactly once, before anything runs.</b></p>
+
 <p align="center">
   <a href="https://github.com/PCalvanelli/cardinal/actions/workflows/ci.yml"><img src="https://github.com/PCalvanelli/cardinal/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <img src="https://img.shields.io/badge/status-beta-orange" alt="Status: beta">
@@ -14,8 +16,13 @@
 > **Beta (v0.1.0-beta.3).** Output, flags and config may change between beta releases.
 
 Cardinal checks that your dbt models count every row correctly. It reads the SQL dbt
-compiles and finds rows that get **repeated** (a join that fans out and inflates a sum)
-or **dropped** (an inner join or filter that silently loses rows), before any data moves.
+compiles and finds three kinds of miscount before any data moves:
+
+- **Repeated:** a join fans out and inflates a sum.
+- **Dropped:** an inner join or filter silently loses rows.
+- **Double-added:** counts that overlap get summed, like daily active users added up
+  into a monthly figure.
+
 It never connects to your warehouse.
 
 Cardinal checks structure, not meaning. It can tell you revenue counts each order once.
@@ -136,6 +143,26 @@ To silence one finding, add a comment with a reason:
 ```sql
 sum(shipping_fee) as shipping  -- cardinal: allow(G001) reason: fee is allocated per line upstream
 ```
+
+## How it works
+
+Cardinal is a static analyzer that proves **summarizability** for a dbt DAG: no row is
+duplicated, no row is lost, and nothing non-additive gets summed. It does this by
+inferring keys and functional and inclusion dependencies through every query, model by
+model.
+
+Cardinal doesn't run your SQL against data. It runs it against facts about the data:
+which columns form a key, which columns determine others, which columns are never null,
+and which rows are guaranteed to have a match in another relation. These facts start
+from your dbt tests and `meta.cardinal` declarations on sources. Every join, filter,
+aggregate and window then updates them, and they carry over from each model to the
+models that read it.
+
+A finding means the facts can't rule a miscount out. A proof means it can't happen on
+any data that passes the tests it rests on. `cardinal assumptions` lists those tests.
+
+Observability tools catch bad numbers after they land. Cardinal checks the logic that
+produces them, in CI, before the model runs.
 
 ## Add it to CI
 
