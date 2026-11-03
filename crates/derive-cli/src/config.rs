@@ -109,18 +109,21 @@ impl Config {
 
 impl Severities {
     pub fn resolve(&self, code: Code, file: &str) -> Level {
+        self.configured(code, file)
+            .unwrap_or(Level::On(code.default_severity()))
+    }
+
+    /// The level set for `code` by flags or derive.toml, or None when it is not set.
+    pub fn configured(&self, code: Code, file: &str) -> Option<Level> {
         if let Some(l) = self.cli.get(&code) {
-            return *l;
+            return Some(*l);
         }
         for (p, m) in &self.paths {
             if (file == p || file.starts_with(&format!("{p}/"))) && m.contains_key(&code) {
-                return m[&code];
+                return Some(m[&code]);
             }
         }
-        self.global
-            .get(&code)
-            .copied()
-            .unwrap_or(Level::On(code.default_severity()))
+        self.global.get(&code).copied()
     }
 }
 

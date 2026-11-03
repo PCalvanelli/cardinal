@@ -1,6 +1,6 @@
 [package]
 name = "derive-check"
-description = "Derive's grain checks, G001 to G005"
+description = "Derive's grain checks, G001 to G007"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

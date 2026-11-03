@@ -43,6 +43,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub unique_key: Option<Value>,
     #[serde(default)]
+    pub incremental_strategy: Option<String>,
+    #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
     pub tags: Option<Value>,

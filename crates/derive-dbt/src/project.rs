@@ -1,4 +1,6 @@
-use crate::artifacts::{Catalog, ColumnInfo, KNOWN_MANIFEST_VERSIONS, Manifest, ManifestNode};
+use crate::artifacts::{
+    Catalog, ColumnInfo, KNOWN_MANIFEST_VERSIONS, Manifest, ManifestNode, NodeConfig,
+};
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,6 +57,31 @@ pub struct DeclaredKey {
     pub origin: DeclOrigin,
 }
 
+/// How an incremental model merges new rows into the existing table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Incremental {
+    /// Lowercased `unique_key` columns. Empty when no unique_key is set, or when an
+    /// entry is an expression (`a || '-' || b`) rather than a column name.
+    pub unique_key: Vec<String>,
+    /// The raw unique_key config, for messages.
+    pub unique_key_raw: Option<String>,
+    pub strategy: Option<String>,
+}
+
+impl Incremental {
+    /// Whether the strategy matches existing rows on unique_key. append,
+    /// insert_overwrite, microbatch and replace_where ignore it.
+    pub fn merges_on_key(&self) -> bool {
+        !matches!(
+            self.strategy
+                .as_deref()
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("append" | "insert_overwrite" | "microbatch" | "replace_where")
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignKey {
     pub column: String,
@@ -99,6 +126,8 @@ pub struct Relation {
     pub not_null: BTreeSet<String>,
     pub foreign_keys: Vec<ForeignKey>,
     pub tags: Vec<String>,
+    /// Set for models materialized as incremental.
+    pub incremental: Option<Incremental>,
 }
 
 impl Relation {
@@ -398,6 +427,30 @@ fn string_list(v: &Value) -> Vec<String> {
     }
 }
 
+fn incremental_config(config: &NodeConfig) -> Incremental {
+    let raw: Vec<String> = match &config.unique_key {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(str::to_string)
+            .collect(),
+        _ => vec![],
+    };
+    let cols: Option<Vec<String>> = raw.iter().map(|s| plain_column(s)).collect();
+    Incremental {
+        unique_key: cols.unwrap_or_default(),
+        unique_key_raw: (!raw.is_empty()).then(|| {
+            if raw.len() == 1 {
+                raw[0].clone()
+            } else {
+                format!("[{}]", raw.join(", "))
+            }
+        }),
+        strategy: config.incremental_strategy.clone(),
+    }
+}
+
 fn meta_grain(meta: Option<&Value>) -> Option<Vec<String>> {
     let g = meta?.get("derive")?.get("grain")?;
     let cols = string_list(g);
@@ -604,6 +657,7 @@ fn build(
                 not_null,
                 foreign_keys: vec![],
                 tags: vec![],
+                incremental: None,
             },
         );
     }
@@ -659,6 +713,9 @@ fn build(
                 });
             }
         }
+        let incremental =
+            matches!(&kind, Kind::Model { materialized } if materialized == "incremental")
+                .then(|| incremental_config(&n.config));
         let compiled_path = Some(
             target_rel
                 .join("compiled")
@@ -699,6 +756,7 @@ fn build(
                 not_null,
                 foreign_keys: vec![],
                 tags: n.tags.clone(),
+                incremental,
             },
         );
     }

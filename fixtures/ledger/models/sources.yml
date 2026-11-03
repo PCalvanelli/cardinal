@@ -1,0 +1,13 @@
+version: 2
+sources:
+  - name: ledger
+    schema: ledger
+    tables:
+      - name: orders
+        meta:
+          derive:
+            grain: [order_id]
+      - name: payments
+        meta:
+          derive:
+            grain: [payment_id]

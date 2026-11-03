@@ -9,6 +9,8 @@ pub enum Code {
     G003,
     G004,
     G005,
+    G006,
+    G007,
     E001,
     E002,
     E003,
@@ -22,6 +24,8 @@ pub const ALL_CODES: &[Code] = &[
     Code::G003,
     Code::G004,
     Code::G005,
+    Code::G006,
+    Code::G007,
     Code::E001,
     Code::E002,
     Code::E003,
@@ -37,6 +41,8 @@ impl Code {
             Code::G003 => "many-to-many join",
             Code::G004 => "grain is unknown",
             Code::G005 => "suppression matches no finding",
+            Code::G006 => "incremental unique_key is not a key",
+            Code::G007 => "window order has ties",
             Code::E001 => "missing compiled SQL",
             Code::E002 => "SQL does not parse",
             Code::E003 => "unresolved function",
@@ -48,7 +54,7 @@ impl Code {
     pub fn default_severity(self) -> Severity {
         match self {
             Code::G001 => Severity::Error,
-            Code::G002 | Code::G003 | Code::G005 => Severity::Warning,
+            Code::G002 | Code::G003 | Code::G005 | Code::G006 | Code::G007 => Severity::Warning,
             Code::G004 => Severity::Info,
             _ => Severity::Error,
         }
@@ -75,7 +81,7 @@ impl FromStr for Code {
             .iter()
             .find(|c| c.to_string().eq_ignore_ascii_case(s.trim()))
             .copied()
-            .ok_or_else(|| format!("unknown code `{s}` (expected G001 to G005 or E001 to E005)"))
+            .ok_or_else(|| format!("unknown code `{s}` (expected G001 to G007 or E001 to E005)"))
     }
 }
 

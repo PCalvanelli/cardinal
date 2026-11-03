@@ -241,6 +241,32 @@ expression: json_without_timing(&out)
             },
             {
               "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "incremental unique_key is not a key. Run `derive explain G006` for details."
+              },
+              "id": "G006",
+              "name": "incremental unique_key is not a key",
+              "shortDescription": {
+                "text": "incremental unique_key is not a key"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "window order has ties. Run `derive explain G007` for details."
+              },
+              "id": "G007",
+              "name": "window order has ties",
+              "shortDescription": {
+                "text": "window order has ties"
+              }
+            },
+            {
+              "defaultConfiguration": {
                 "level": "error"
               },
               "fullDescription": {
