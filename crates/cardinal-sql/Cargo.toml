@@ -1,0 +1,16 @@
+[package]
+name = "cardinal-sql"
+description = "SQL front end for Cardinal: dialects, DataFusion planning, function stubs, spans"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+datafusion-sql.workspace = true
+datafusion-expr.workspace = true
+datafusion-common.workspace = true
+datafusion-functions.workspace = true
+datafusion-functions-aggregate.workspace = true
+datafusion-functions-window.workspace = true
+datafusion-functions-nested.workspace = true
+serde.workspace = true

@@ -2,7 +2,7 @@
 //!
 //!   fixtures            regenerate fixtures/*/target/{manifest,catalog}.json with dbt and DuckDB
 //!   new-check G006      scaffold a check, its explain page and a fixture project
-//!   corpus DIR...       run `derive check` over compiled dbt projects and report per-project stats
+//!   corpus DIR...       run `cardinal check` over compiled dbt projects and report per-project stats
 //!   synth DIR [N]       write a synthetic N-model project (default 1000) for benchmarks
 
 use anyhow::{Context, Result, bail};
@@ -28,11 +28,11 @@ fn main() -> Result<()> {
                     .context("usage: cargo xtask synth DIR [MODELS]")?,
             );
             let n = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000);
-            let spec = derive_cli::synth::SynthSpec {
+            let spec = cardinal_cli::synth::SynthSpec {
                 models: n,
                 ..Default::default()
             };
-            let root = derive_cli::synth::generate(&dir, spec)?;
+            let root = cardinal_cli::synth::generate(&dir, spec)?;
             println!("wrote a {n}-model project to {}", root.display());
             Ok(())
         }
@@ -120,7 +120,7 @@ fn new_check(code: &str) -> Result<()> {
     }
     let lower = code.to_lowercase();
     let ws = workspace();
-    let src = ws.join(format!("crates/derive-check/src/{lower}.rs"));
+    let src = ws.join(format!("crates/cardinal-check/src/{lower}.rs"));
     if src.exists() {
         bail!("{} already exists", src.display());
     }
@@ -130,8 +130,8 @@ fn new_check(code: &str) -> Result<()> {
             r#"//! {code}: <one line saying what this finds>.
 
 use crate::{{Check, CheckContext}};
-use derive_diag::{{Code, Diagnostic}};
-use derive_grain::AnalyzedModel;
+use cardinal_diag::{{Code, Diagnostic}};
+use cardinal_grain::AnalyzedModel;
 
 pub struct NewCheck;
 
@@ -171,8 +171,8 @@ impl Check for NewCheck {{
         "Created:\n  {}\n  docs/explain/{code}.md\n  fixtures/{lower}/",
         src.display()
     );
-    println!("Then: add Code::{code} in crates/derive-diag/src/code.rs, register the check in");
-    println!("derive_check::model_checks(), add the explain page in derive-cli's explain.rs,");
+    println!("Then: add Code::{code} in crates/cardinal-diag/src/code.rs, register the check in");
+    println!("cardinal_check::model_checks(), add the explain page in cardinal-cli's explain.rs,");
     println!("and run `cargo xtask fixtures {lower}` followed by `cargo insta review`.");
     Ok(())
 }
@@ -206,7 +206,7 @@ fn corpus(dirs: &[String]) -> Result<()> {
                 "--project-dir",
                 d,
             ])
-            .env("DERIVE_ALLOW_STALE", "1")
+            .env("CARDINAL_ALLOW_STALE", "1")
             .output()?;
         let check: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
         let models = cov["models"].as_u64().unwrap_or(0);
@@ -231,7 +231,7 @@ fn corpus(dirs: &[String]) -> Result<()> {
 
 fn ws_bin() -> Result<PathBuf> {
     run(Command::new(env!("CARGO"))
-        .args(["build", "--release", "-p", "derive-cli"])
+        .args(["build", "--release", "-p", "cardinal-cli"])
         .current_dir(workspace()))?;
-    Ok(workspace().join("target/release/derive"))
+    Ok(workspace().join("target/release/cardinal"))
 }

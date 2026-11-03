@@ -33,10 +33,10 @@ proptest = "1"
 datafusion = { version = "=55.2.0", default-features = false, features = ["sql", "nested_expressions"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
-derive-dbt = { path = "crates/derive-dbt" }
-derive-sql = { path = "crates/derive-sql" }
-derive-grain = { path = "crates/derive-grain" }
-derive-check = { path = "crates/derive-check" }
-derive-diag = { path = "crates/derive-diag" }
-derive-cache = { path = "crates/derive-cache" }
+cardinal-dbt = { path = "crates/cardinal-dbt" }
+cardinal-sql = { path = "crates/cardinal-sql" }
+cardinal-grain = { path = "crates/cardinal-grain" }
+cardinal-check = { path = "crates/cardinal-check" }
+cardinal-diag = { path = "crates/cardinal-diag" }
+cardinal-cache = { path = "crates/cardinal-cache" }
 datafusion-functions-nested = { version = "=55.2.0", default-features = false }

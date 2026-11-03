@@ -1,0 +1,60 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+warning[G003]: many-to-many join
+ --> models/marts/customer_promos.sql:5:1
+  |
+5 | join {{ source('shop', 'promos') }} p on o.customer_id = p.customer_id
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ neither stg_orders (customer_id) nor shop.promos (customer_id) is unique
+  |
+  = note: stg_orders has grain (order_id)
+  = note: shop.promos has grain (customer_id, promo_code)
+  = note: every pair of matching rows becomes one output row
+  = help: reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)
+  = see: cardinal explain G003
+
+warning[G005]: suppression matches no finding
+ --> models/marts/customer_summary.sql:5:38
+  |
+5 |     sum(o.shipping_fee) as shipping  -- cardinal: allow(G001) reason: stale, nothing fans out here
+  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ allow(G001) no longer matches any finding
+  |
+  = help: remove the comment
+  = see: cardinal explain G005
+
+error[G001]: aggregation fans out
+ --> models/marts/daily_revenue.sql:4:24
+  |
+4 |     sum(line_amount) + sum(shipping_fee) as revenue
+  |                        ^^^^^^^^^^^^^^^^^ shipping_fee is determined by (order_id)
+  |
+ ::: models/intermediate/order_lines.sql:9:1
+  |
+9 | join {{ ref('int_order_items') }} i using (order_id)
+  | ---------------------------------------------------- one-to-many: rows repeat per row of int_order_items
+  |
+  = note: order_lines has grain (order_id, line_id), proven: one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain
+  = help: sum shipping_fee per (order_id) before the join, or read it from a relation at that grain
+  = see: cardinal explain G001
+
+warning[G002]: declared key (customer_id) is not proven by the SQL
+ --> models/marts/latest_order.sql
+  |
+  = the SQL proves grain (order_id)
+  |
+  = note: test unique_latest_order_customer_id remains the only guarantee
+  = help: declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup
+  = see: cardinal explain G002
+
+info[G004]: grain unknown for 1 model: source shop.events declares no key
+ --> models/sources.yml
+  |
+  = note: affects order_events
+  = note: shop.events declares no key
+  = help: declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test
+  = see: cardinal explain G004
+
+Analyzed 12 models in <time>: 11 with known grain (92%).
+Findings: 1 error, 3 warnings, 1 info (G001 ×1, G002 ×1, G003 ×1, G004 ×1, G005 ×1); 1 suppressed.
+Next: declare grain on 1 source to cover 1 more model: shop.events (see cardinal coverage).

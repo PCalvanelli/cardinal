@@ -5,9 +5,9 @@ sources:
     tables:
       - name: orders
         meta:
-          derive:
+          cardinal:
             grain: [order_id]
       - name: payments
         meta:
-          derive:
+          cardinal:
             grain: [payment_id]
