@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "derive-cache"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "blake3",
  "serde",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "derive-check"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "derive-dbt",
  "derive-diag",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "derive-cli"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "derive-dbt"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "petgraph",
  "serde",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "derive-diag"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "derive-sql",
  "serde",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "derive-grain"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "datafusion",
  "derive-dbt",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "derive-sql"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "datafusion-common",
  "datafusion-expr",
@@ -3327,7 +3327,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "derive-cli",

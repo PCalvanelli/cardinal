@@ -1,5 +1,9 @@
 # Derive
 
+> **Beta (v0.1.0-beta.1).** Derive is pre-release software. Findings, flags, the
+> derive.toml format and the JSON output schema may change between beta releases, and
+> the checks have not yet been validated against a corpus of production dbt projects.
+
 A static grain checker for dbt projects. `derive check` reads dbt's compiled artifacts,
 infers the keys and column determinants of every model, and reports grain errors (fan-out
 aggregations, many-to-many joins, unprovable declared keys) before any data moves. It
