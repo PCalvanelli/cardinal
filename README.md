@@ -4,7 +4,7 @@
 
 <h1 align="center">Cardinal</h1>
 
-<p align="center"><b>Proves your dbt models count every row exactly once, before anything runs.</b></p>
+<p align="center"><b>Finds where your dbt models can repeat, drop or miscount rows, and proves where they can't, from the compiled SQL alone.</b></p>
 
 <p align="center">
   <a href="https://github.com/PCalvanelli/cardinal/actions/workflows/ci.yml"><img src="https://github.com/PCalvanelli/cardinal/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/built%20for-dbt-FF694B?logo=dbt&logoColor=white" alt="Built for dbt">
 </p>
 
-> **Beta (v0.1.0-beta.5).** Output, flags and config may change between beta releases.
+> **Beta (v0.1.0-beta.6).** Output, flags and config may change between beta releases.
 
 Cardinal reads the SQL that dbt compiles and tells you, before anything runs, where a
 model can count a row twice, lose a row, or add up numbers that don't add up. It never
