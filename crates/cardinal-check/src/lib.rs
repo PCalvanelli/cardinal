@@ -1,37 +1,47 @@
-//! Cardinal's checks. Each check reads an annotated plan and pushes Diagnostic values.
+//! Cardinal's checks, in four invariant layers over one analysis. Each layer depends on
+//! the ones before it, like the stages of a compiler:
+//!
+//! - code: each model's file parses (E001 to E003, G005; see `tool` and suppressions).
+//! - `graph`: every ref() and declared relation resolves (E004, D002).
+//! - `node`: each model's declared shape: columns, types, grain (E006, D001, G004).
+//! - `operator`: each join, filter, aggregate, window and set operation, checked against
+//!   the keys of what it reads (G001 to G003, G006 to G011, P001 to P003, E005).
+//!
+//! Checks that need a model's plan implement [`Check`] and run during analysis. Checks
+//! over the finished shapes implement [`ProjectCheck`] and run after it.
 
-mod g001;
-mod g002;
-mod g003;
-mod g004;
-mod g006;
-mod g007;
-mod g008;
-mod g009;
-mod p001;
-mod p003;
+mod graph;
+mod node;
+mod operator;
+pub mod shapes;
 mod sites;
 mod tool;
 
-pub use g001::FanOutAggregation;
-pub use g002::UnprovenDeclaredKey;
-pub use g003::ManyToManyJoin;
-pub use g004::{UnknownGrainModel, unknown_grain};
-pub use g006::IncrementalKeyNotUnique;
-pub use g007::WindowOrderTies;
-pub use g008::NonAdditiveSum;
-pub use g009::MixedUnits;
-pub use p001::contract_findings;
-pub use p003::{
+pub use graph::d002::WrongRelation;
+pub use node::d001::DeclarationMismatch;
+pub use node::g004::{UnknownGrain, UnknownGrainModel, root_causes, unknown_grain};
+pub use operator::g001::FanOutAggregation;
+pub use operator::g002::UnprovenDeclaredKey;
+pub use operator::g003::ManyToManyJoin;
+pub use operator::g006::IncrementalKeyNotUnique;
+pub use operator::g007::WindowOrderTies;
+pub use operator::g008::NonAdditiveSum;
+pub use operator::g009::MixedUnits;
+pub use operator::g010::SetOpByPosition;
+pub use operator::g011::FilterDropsNulls;
+pub use operator::p001::{ExactlyOnceContracts, contract_findings};
+pub use operator::p003::{
     Bound, Guarantee, Lost, ModelChange, Side, compare as compare_guarantees, lost_guarantees,
 };
+pub use shapes::{SHAPES_FILE, SHAPES_SCHEMA, Shape, Shapes};
 pub use tool::plan_failure;
 
-use cardinal_dbt::{Relation, RelationId};
+use cardinal_dbt::{Project, Relation, RelationId};
 use cardinal_diag::{Code, Diagnostic, Label};
 use cardinal_grain::{AnalyzedModel, DeclaredCheck};
 use cardinal_sql::SqlSpan;
 use cardinal_sql::provider::Functions;
+use std::collections::BTreeSet;
 
 /// Turns positions in a relation's compiled SQL into labels in the user's own files.
 pub trait Locator: Sync {
@@ -46,12 +56,32 @@ pub struct CheckContext<'a> {
     pub declared: &'a [DeclaredCheck],
 }
 
+/// A check over one model's plan, run during analysis (and cached with its result).
 pub trait Check: Send + Sync {
     fn code(&self) -> Code;
     fn run(&self, cx: &CheckContext<'_>, model: &AnalyzedModel, out: &mut Vec<Diagnostic>);
 }
 
-/// The per-model checks, in code order. G004 and G005 run over the whole project.
+pub struct ProjectContext<'a> {
+    pub project: &'a Project,
+    /// Shapes of every analyzed relation; empty when no SQL was analyzed.
+    pub shapes: &'a Shapes,
+    /// The models findings are reported for.
+    pub selected: &'a BTreeSet<RelationId>,
+    pub locator: &'a dyn Locator,
+}
+
+/// A check over the project's finished shapes and declarations, run after analysis.
+pub trait ProjectCheck: Send + Sync {
+    /// The codes it can report.
+    fn codes(&self) -> &'static [Code];
+    /// False when it reads only the manifest and catalog, so it also runs when only the
+    /// graph and node layers are checked, and on models whose SQL failed to plan.
+    fn needs_sql(&self) -> bool;
+    fn run(&self, cx: &ProjectContext<'_>, out: &mut Vec<Diagnostic>);
+}
+
+/// The per-model checks, in code order.
 pub fn model_checks() -> Vec<Box<dyn Check>> {
     vec![
         Box::new(FanOutAggregation),
@@ -61,12 +91,49 @@ pub fn model_checks() -> Vec<Box<dyn Check>> {
         Box::new(WindowOrderTies),
         Box::new(NonAdditiveSum),
         Box::new(MixedUnits),
+        Box::new(SetOpByPosition),
+        Box::new(FilterDropsNulls),
     ]
+}
+
+/// The checks over the whole project. P003 is not here: it compares two projects, and
+/// `check --state` drives it.
+pub fn project_checks() -> Vec<Box<dyn ProjectCheck>> {
+    vec![
+        Box::new(UnknownGrain),
+        Box::new(WrongRelation),
+        Box::new(DeclarationMismatch),
+        Box::new(ExactlyOnceContracts),
+    ]
+}
+
+/// The relations whose declarations to check: the selected models, and the sources,
+/// seeds and snapshots they read (whose declarations their analysis rests on).
+pub(crate) fn declared_relations<'a>(cx: &ProjectContext<'a>) -> Vec<&'a Relation> {
+    let mut ids: BTreeSet<RelationId> = cx.selected.clone();
+    for id in cx.selected {
+        ids.extend(
+            cx.project
+                .ancestors(id)
+                .into_iter()
+                .filter(|a| cx.project.get(a).is_some_and(|r| !r.is_model())),
+        );
+    }
+    ids.iter().filter_map(|id| cx.project.get(id)).collect()
+}
+
+/// Where a declaration lives: the relation's YAML file when known, else its own file.
+pub(crate) fn decl_label(rel: &Relation, message: String) -> Label {
+    Label {
+        file: rel.yaml_file.clone().unwrap_or_else(|| rel.file.clone()),
+        span: None,
+        message,
+    }
 }
 
 /// Changes whenever the set of checks or their output changes, so cached results from
 /// an older check set are not reused.
-pub const CHECKS_FINGERPRINT: &str = "G001-G009+P003";
+pub const CHECKS_FINGERPRINT: &str = "G001-G011+P003";
 
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))

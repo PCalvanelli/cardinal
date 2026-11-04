@@ -61,8 +61,10 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
         baseline: None,
         state: None,
         min_severity: Severity::Info,
+        layers: &BTreeSet::new(),
+        no_sql: false,
     };
-    let findings = pipeline::collect(project, &run, &selected, &opts);
+    let findings = pipeline::collect(project, &run, &run.shapes(project), &selected, &opts);
     let keyless: Vec<Keyless<'_>> = findings
         .root_causes
         .iter()

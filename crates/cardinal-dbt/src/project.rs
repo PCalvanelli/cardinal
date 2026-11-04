@@ -241,6 +241,41 @@ pub struct Relation {
     pub tags: Vec<String>,
     /// Set for models materialized as incremental.
     pub incremental: Option<Incremental>,
+    /// meta.cardinal declarations that were ignored, and why (D001, D002).
+    pub decl_problems: Vec<DeclProblem>,
+    /// The YAML file that holds its declarations, relative to the project root, when
+    /// known. For sources, the same as `file`.
+    pub yaml_file: Option<String>,
+}
+
+/// What is wrong with a meta.cardinal declaration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeclProblemKind {
+    /// Not in a shape Cardinal reads.
+    Malformed,
+    /// Names a column the relation (or the other relation) doesn't have.
+    MissingColumn,
+    /// Names something that is not a model, seed, snapshot or source.
+    UnknownRelation,
+}
+
+/// A meta.cardinal declaration Cardinal ignored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclProblem {
+    /// The setting: references, measure, unit or exactly_once.
+    pub field: &'static str,
+    pub kind: DeclProblemKind,
+    pub message: String,
+}
+
+impl DeclProblem {
+    fn new(field: &'static str, kind: DeclProblemKind, message: impl Into<String>) -> Self {
+        DeclProblem {
+            field,
+            kind,
+            message: message.into(),
+        }
+    }
 }
 
 impl Relation {
@@ -258,8 +293,6 @@ pub enum LoadWarning {
     MissingCatalog { command: String },
     UnknownAdapter(String),
     CycleIgnored(Vec<RelationId>),
-    BadReference { relation: String, problem: String },
-    BadMeasure { relation: String, problem: String },
     Guesses(String),
 }
 
@@ -290,13 +323,6 @@ impl fmt::Display for LoadWarning {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            LoadWarning::BadReference { relation, problem } => write!(
-                f,
-                "meta.cardinal.references on {relation} is ignored: {problem}"
-            ),
-            LoadWarning::BadMeasure { relation, problem } => {
-                write!(f, "meta.cardinal on {relation} is ignored: {problem}")
-            }
             LoadWarning::Guesses(m) => f.write_str(m),
         }
     }
@@ -366,6 +392,8 @@ pub struct Project {
     /// Every 1-, 2- and 3-part suffix of each relation_name -> relations with it.
     name_index: HashMap<String, Vec<RelationId>>,
     pub manifest_mtime: Option<SystemTime>,
+    /// The manifest's metadata.invocation_id: which dbt run wrote it.
+    pub invocation_id: Option<String>,
     /// dbt's `test-paths`, relative to the root.
     pub test_paths: Vec<String>,
     /// Cardinal guess tests in the manifest.
@@ -815,15 +843,16 @@ fn raw_references(
     meta: Option<&Value>,
     config_meta: Option<&Value>,
     cols: &BTreeMap<String, ColumnInfo>,
-    problems: &mut Vec<String>,
+    problems: &mut Vec<DeclProblem>,
 ) -> Vec<RawReference> {
+    let bad = |m: String| DeclProblem::new("references", DeclProblemKind::Malformed, m);
     let mut out = Vec::new();
     if let Some(v) =
         cardinal_meta(meta, "references").or_else(|| cardinal_meta(config_meta, "references"))
     {
         match relation_references(v) {
             Ok(r) => out.extend(r),
-            Err(e) => problems.push(e),
+            Err(e) => problems.push(bad(e)),
         }
     }
     for (k, info) in cols {
@@ -838,7 +867,7 @@ fn raw_references(
         {
             match column_reference(&name, v) {
                 Ok(r) => out.push(r),
-                Err(e) => problems.push(format!("column {name}: {e}")),
+                Err(e) => problems.push(bad(format!("column {name}: {e}"))),
             }
         }
     }
@@ -850,8 +879,9 @@ fn raw_references(
 fn column_measures(
     cols: &BTreeMap<String, ColumnInfo>,
     columns: &[Column],
-    problems: &mut Vec<String>,
+    problems: &mut Vec<DeclProblem>,
 ) -> (Vec<DeclaredMeasure>, Vec<DeclaredUnit>) {
+    use DeclProblemKind::{Malformed, MissingColumn};
     let known = |n: &str| columns.is_empty() || columns.iter().any(|c| c.name == n);
     let mut measures = Vec::new();
     let mut units = Vec::new();
@@ -877,17 +907,25 @@ fn column_measures(
                             kind,
                         });
                     } else {
-                        problems.push(format!(
-                            "column {name}: measure is over {}, which is not a column",
-                            missing
-                                .iter()
-                                .map(|s| s.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                        problems.push(DeclProblem::new(
+                            "measure",
+                            MissingColumn,
+                            format!(
+                                "column {name}: measure is over {}, which is not a column",
+                                missing
+                                    .iter()
+                                    .map(|s| s.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
                         ));
                     }
                 }
-                Err(e) => problems.push(format!("column {name}: measure {e}")),
+                Err(e) => problems.push(DeclProblem::new(
+                    "measure",
+                    Malformed,
+                    format!("column {name}: measure {e}"),
+                )),
             }
         }
         if let Some(v) = get("unit") {
@@ -896,11 +934,15 @@ fn column_measures(
                     column: name.clone(),
                     unit,
                 }),
-                Some(unit) => problems.push(format!(
-                    "column {name}: its unit column {unit} is not a column"
+                Some(unit) => problems.push(DeclProblem::new(
+                    "unit",
+                    MissingColumn,
+                    format!("column {name}: its unit column {unit} is not a column"),
                 )),
-                None => problems.push(format!(
-                    "column {name}: unit should name the column that holds its unit"
+                None => problems.push(DeclProblem::new(
+                    "unit",
+                    Malformed,
+                    format!("column {name}: unit should name the column that holds its unit"),
                 )),
             }
         }
@@ -1011,11 +1053,11 @@ fn resolve_name(relations: &BTreeMap<RelationId, Relation>, name: &str) -> Optio
 fn resolve_references(
     relations: &mut BTreeMap<RelationId, Relation>,
     raw: BTreeMap<RelationId, Vec<RawReference>>,
-    warnings: &mut Vec<LoadWarning>,
 ) {
     for (id, refs) in raw {
         let display = relations[&id].display.clone();
         let mut resolved = Vec::new();
+        let mut problems = Vec::new();
         for r in refs {
             let mut to_name = r.to.clone();
             let mut to_cols = r.to_cols.clone();
@@ -1031,10 +1073,11 @@ fn resolve_references(
                 to_cols = vec![col.to_lowercase()];
             }
             let Some(to) = to else {
-                warnings.push(LoadWarning::BadReference {
-                    relation: display.clone(),
-                    problem: format!("`{}` is not a model, seed, snapshot or source", r.to),
-                });
+                problems.push(DeclProblem::new(
+                    "references",
+                    DeclProblemKind::UnknownRelation,
+                    format!("`{}` is not a model, seed, snapshot or source", r.to),
+                ));
                 continue;
             };
             if to_cols.is_empty() {
@@ -1042,14 +1085,15 @@ fn resolve_references(
             }
             let to_cols: Vec<String> = to_cols.iter().map(|c| c.to_lowercase()).collect();
             if to_cols.len() != r.cols.len() {
-                warnings.push(LoadWarning::BadReference {
-                    relation: display.clone(),
-                    problem: format!(
+                problems.push(DeclProblem::new(
+                    "references",
+                    DeclProblemKind::Malformed,
+                    format!(
                         "{} columns reference {} columns of {to_name}",
                         r.cols.len(),
                         to_cols.len()
                     ),
-                });
+                ));
                 continue;
             }
             let missing = |rel: &Relation, cols: &[String]| -> Vec<String> {
@@ -1075,10 +1119,11 @@ fn resolve_references(
                         m2.join(", ")
                     ));
                 }
-                warnings.push(LoadWarning::BadReference {
-                    relation: display.clone(),
-                    problem: parts.join("; "),
-                });
+                problems.push(DeclProblem::new(
+                    "references",
+                    DeclProblemKind::MissingColumn,
+                    parts.join("; "),
+                ));
                 continue;
             }
             let d = DeclaredReference {
@@ -1093,6 +1138,7 @@ fn resolve_references(
         }
         if let Some(rel) = relations.get_mut(&id) {
             rel.references = resolved;
+            rel.decl_problems.extend(problems);
         }
     }
 }
@@ -1256,28 +1302,15 @@ fn build(
             &mut not_null,
         );
         constraint_facts(&[], &s.columns, &mut declared_keys, &mut not_null);
-        let mut problems = Vec::new();
+        let mut decl_problems = Vec::new();
         let refs = raw_references(
             s.meta.as_ref(),
             s.config.meta.as_ref(),
             &s.columns,
-            &mut problems,
+            &mut decl_problems,
         );
         let display = format!("{}.{}", s.source_name, s.name);
-        for p in problems {
-            warnings.push(LoadWarning::BadReference {
-                relation: display.clone(),
-                problem: p,
-            });
-        }
-        let mut problems = Vec::new();
-        let (measures, units) = column_measures(&s.columns, &columns, &mut problems);
-        for p in problems {
-            warnings.push(LoadWarning::BadMeasure {
-                relation: display.clone(),
-                problem: p,
-            });
-        }
+        let (measures, units) = column_measures(&s.columns, &columns, &mut decl_problems);
         if !refs.is_empty() {
             raw_refs.insert(RelationId(id.clone()), refs);
         }
@@ -1310,6 +1343,8 @@ fn build(
                 contract_enforced: false,
                 tags: vec![],
                 incremental: None,
+                decl_problems,
+                yaml_file: Some(s.original_file_path.clone()),
             },
         );
     }
@@ -1344,27 +1379,14 @@ fn build(
             &mut declared_keys,
             &mut not_null,
         );
-        let mut problems = Vec::new();
+        let mut decl_problems = Vec::new();
         let refs = raw_references(
             n.meta.as_ref(),
             n.config.meta.as_ref(),
             &n.columns,
-            &mut problems,
+            &mut decl_problems,
         );
-        for p in problems {
-            warnings.push(LoadWarning::BadReference {
-                relation: n.name.clone(),
-                problem: p,
-            });
-        }
-        let mut problems = Vec::new();
-        let (measures, units) = column_measures(&n.columns, &columns, &mut problems);
-        for p in problems {
-            warnings.push(LoadWarning::BadMeasure {
-                relation: n.name.clone(),
-                problem: p,
-            });
-        }
+        let (measures, units) = column_measures(&n.columns, &columns, &mut decl_problems);
         if !refs.is_empty() {
             raw_refs.insert(RelationId(id.clone()), refs);
         }
@@ -1446,6 +1468,11 @@ fn build(
                 contract_enforced,
                 tags: n.tags.clone(),
                 incremental,
+                decl_problems,
+                yaml_file: n
+                    .patch_path
+                    .as_deref()
+                    .map(|p| p.split_once("://").map_or(p, |(_, rest)| rest).to_string()),
             },
         );
     }
@@ -1463,7 +1490,7 @@ fn build(
             attach_test(n, &mut relations);
         }
     }
-    resolve_references(&mut relations, raw_refs, &mut warnings);
+    resolve_references(&mut relations, raw_refs);
     for (id, names) in raw_exactly_once {
         let targets: Vec<ExactlyOnce> = names
             .into_iter()
@@ -1524,6 +1551,7 @@ fn build(
         warnings,
         name_index,
         manifest_mtime: None,
+        invocation_id: manifest.metadata.invocation_id.clone(),
         test_paths: yml.test_paths.clone(),
         guess_tests,
         guesses: GuessLog::default(),

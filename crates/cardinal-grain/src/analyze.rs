@@ -9,7 +9,7 @@ use crate::facts::{
 };
 use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
-use cardinal_sql::datafusion_common::tree_node::TreeNode;
+use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use cardinal_sql::datafusion_common::{Column, DFSchema, ScalarValue};
 use cardinal_sql::datafusion_expr::expr::{Alias, WindowFunction};
 use cardinal_sql::datafusion_expr::logical_plan::{
@@ -667,6 +667,27 @@ impl Analyzer<'_> {
         facts
     }
 
+    /// Facts for each `IN (subquery)` in a filter, so checks can ask whether the
+    /// subquery's column can be null. The subquery's rows don't become the model's rows,
+    /// so the joins and row losses inside it are not recorded as the model's.
+    fn visit_in_subqueries(&mut self, predicate: &Expr) {
+        let mut subqueries = Vec::new();
+        let _ = predicate.apply(|e| {
+            if let Expr::InSubquery(s) = e {
+                subqueries.push(s.subquery.subquery.clone());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        for plan in subqueries {
+            let (joins, losses) = (self.joins.len(), self.losses.len());
+            let spans = self.used_join_spans.clone();
+            self.visit(&plan);
+            self.joins.truncate(joins);
+            self.losses.truncate(losses);
+            self.used_join_spans = spans;
+        }
+    }
+
     fn unsupported(&mut self, plan: &LogicalPlan, op: &str) -> RelationFacts {
         for c in plan.inputs() {
             self.visit(c);
@@ -710,7 +731,10 @@ impl Analyzer<'_> {
         match plan {
             LogicalPlan::TableScan(s) => self.table_scan(s),
             LogicalPlan::Projection(p) => self.projection(p),
-            LogicalPlan::Filter(f) => self.filter(f),
+            LogicalPlan::Filter(f) => {
+                self.visit_in_subqueries(&f.predicate);
+                self.filter(f)
+            }
             LogicalPlan::Join(j) => self.join(j),
             LogicalPlan::Aggregate(a) => self.aggregate(a),
             LogicalPlan::Window(w) => self.window(w),

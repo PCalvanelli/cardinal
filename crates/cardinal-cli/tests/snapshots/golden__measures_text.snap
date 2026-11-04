@@ -105,4 +105,4 @@ warning[G008]: adds up a number that can't be added
    = see: cardinal explain G008
 
 Analyzed 15 models in <time>: 14 with a known key (93%).
-Findings: 1 error, 6 warnings (G008 ×6, G009 ×1).
+Findings: 1 error, 6 warnings (operator: G008 ×6, G009 ×1).

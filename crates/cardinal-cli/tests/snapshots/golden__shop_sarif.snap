@@ -12,6 +12,42 @@ expression: json_without_timing(&out)
           "locations": [
             {
               "message": {
+                "text": "allow(G001) no longer matches any finding"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "models/marts/customer_summary.sql",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 99,
+                  "endLine": 5,
+                  "startColumn": 38,
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "suppression matches no finding: allow(G001) no longer matches any finding\nhelp: remove the comment"
+          },
+          "partialFingerprints": {
+            "cardinalFingerprint/v1": "G005:model.shop.customer_summary:g001 stale, nothing fans out here"
+          },
+          "properties": {
+            "evidence": [],
+            "layer": "code",
+            "model": "model.shop.customer_summary"
+          },
+          "relatedLocations": [],
+          "ruleId": "G005",
+          "ruleIndex": 4
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
                 "text": "neither stg_orders (customer_id) nor shop.promos (customer_id) is unique"
               },
               "physicalLocation": {
@@ -38,46 +74,12 @@ expression: json_without_timing(&out)
             "evidence": [
               "many-to-many join on customer_id"
             ],
+            "layer": "operator",
             "model": "model.shop.customer_promos"
           },
           "relatedLocations": [],
           "ruleId": "G003",
           "ruleIndex": 2
-        },
-        {
-          "level": "warning",
-          "locations": [
-            {
-              "message": {
-                "text": "allow(G001) no longer matches any finding"
-              },
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "models/marts/customer_summary.sql",
-                  "uriBaseId": "%SRCROOT%"
-                },
-                "region": {
-                  "endColumn": 99,
-                  "endLine": 5,
-                  "startColumn": 38,
-                  "startLine": 5
-                }
-              }
-            }
-          ],
-          "message": {
-            "text": "suppression matches no finding: allow(G001) no longer matches any finding\nhelp: remove the comment"
-          },
-          "partialFingerprints": {
-            "cardinalFingerprint/v1": "G005:model.shop.customer_summary:g001 stale, nothing fans out here"
-          },
-          "properties": {
-            "evidence": [],
-            "model": "model.shop.customer_summary"
-          },
-          "relatedLocations": [],
-          "ruleId": "G005",
-          "ruleIndex": 4
         },
         {
           "level": "warning",
@@ -112,6 +114,7 @@ expression: json_without_timing(&out)
               "customer_id does not determine order_date",
               "the sum's grouping plus the counts' shared columns is not a key of the sum's input"
             ],
+            "layer": "operator",
             "model": "model.shop.customers_to_date"
           },
           "relatedLocations": [
@@ -170,6 +173,7 @@ expression: json_without_timing(&out)
               "(order_id) plus the GROUP BY columns don't identify one input row",
               "one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)"
             ],
+            "layer": "operator",
             "model": "model.shop.daily_revenue"
           },
           "relatedLocations": [
@@ -220,6 +224,7 @@ expression: json_without_timing(&out)
             "evidence": [
               "key of shop.orders (test source_unique_shop_orders_order_id)"
             ],
+            "layer": "operator",
             "model": "model.shop.latest_order"
           },
           "relatedLocations": [],
@@ -259,6 +264,7 @@ expression: json_without_timing(&out)
               "customer_id does not determine order_date",
               "(date_trunc('month', order_date)) plus the counts' shared columns is not a key of the sum's input"
             ],
+            "layer": "operator",
             "model": "model.shop.monthly_active_customers"
           },
           "relatedLocations": [
@@ -299,6 +305,11 @@ expression: json_without_timing(&out)
               },
               "id": "G001",
               "name": "a join repeats values that are then added up",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "a join repeats values that are then added up"
               }
@@ -312,6 +323,11 @@ expression: json_without_timing(&out)
               },
               "id": "G002",
               "name": "declared key isn't guaranteed by the SQL",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "declared key isn't guaranteed by the SQL"
               }
@@ -325,6 +341,11 @@ expression: json_without_timing(&out)
               },
               "id": "G003",
               "name": "many-to-many join",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "many-to-many join"
               }
@@ -338,6 +359,11 @@ expression: json_without_timing(&out)
               },
               "id": "G004",
               "name": "key is unknown",
+              "properties": {
+                "tags": [
+                  "layer:node"
+                ]
+              },
               "shortDescription": {
                 "text": "key is unknown"
               }
@@ -351,6 +377,11 @@ expression: json_without_timing(&out)
               },
               "id": "G005",
               "name": "suppression matches no finding",
+              "properties": {
+                "tags": [
+                  "layer:code"
+                ]
+              },
               "shortDescription": {
                 "text": "suppression matches no finding"
               }
@@ -364,6 +395,11 @@ expression: json_without_timing(&out)
               },
               "id": "G006",
               "name": "incremental unique_key isn't unique",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "incremental unique_key isn't unique"
               }
@@ -377,6 +413,11 @@ expression: json_without_timing(&out)
               },
               "id": "G007",
               "name": "window ordering can tie",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "window ordering can tie"
               }
@@ -390,6 +431,11 @@ expression: json_without_timing(&out)
               },
               "id": "G008",
               "name": "adds up a number that can't be added",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "adds up a number that can't be added"
               }
@@ -403,8 +449,49 @@ expression: json_without_timing(&out)
               },
               "id": "G009",
               "name": "adds amounts in different units",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "adds amounts in different units"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "set operation matches columns by position, not name. Run `cardinal explain G010` for details."
+              },
+              "id": "G010",
+              "name": "set operation matches columns by position, not name",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
+              "shortDescription": {
+                "text": "set operation matches columns by position, not name"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "filter drops rows with nulls. Run `cardinal explain G011` for details."
+              },
+              "id": "G011",
+              "name": "filter drops rows with nulls",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
+              "shortDescription": {
+                "text": "filter drops rows with nulls"
               }
             },
             {
@@ -416,6 +503,11 @@ expression: json_without_timing(&out)
               },
               "id": "P001",
               "name": "exactly_once contract isn't proven",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "exactly_once contract isn't proven"
               }
@@ -429,6 +521,11 @@ expression: json_without_timing(&out)
               },
               "id": "P002",
               "name": "proof relies on something no test checks",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "proof relies on something no test checks"
               }
@@ -442,8 +539,49 @@ expression: json_without_timing(&out)
               },
               "id": "P003",
               "name": "guarantee from main is lost",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "guarantee from main is lost"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "declaration doesn't match the model. Run `cardinal explain D001` for details."
+              },
+              "id": "D001",
+              "name": "declaration doesn't match the model",
+              "properties": {
+                "tags": [
+                  "layer:node"
+                ]
+              },
+              "shortDescription": {
+                "text": "declaration doesn't match the model"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "declaration names the wrong relation. Run `cardinal explain D002` for details."
+              },
+              "id": "D002",
+              "name": "declaration names the wrong relation",
+              "properties": {
+                "tags": [
+                  "layer:graph"
+                ]
+              },
+              "shortDescription": {
+                "text": "declaration names the wrong relation"
               }
             },
             {
@@ -455,6 +593,11 @@ expression: json_without_timing(&out)
               },
               "id": "E001",
               "name": "missing compiled SQL",
+              "properties": {
+                "tags": [
+                  "layer:code"
+                ]
+              },
               "shortDescription": {
                 "text": "missing compiled SQL"
               }
@@ -468,6 +611,11 @@ expression: json_without_timing(&out)
               },
               "id": "E002",
               "name": "SQL doesn't parse",
+              "properties": {
+                "tags": [
+                  "layer:code"
+                ]
+              },
               "shortDescription": {
                 "text": "SQL doesn't parse"
               }
@@ -481,6 +629,11 @@ expression: json_without_timing(&out)
               },
               "id": "E003",
               "name": "unresolved function",
+              "properties": {
+                "tags": [
+                  "layer:code"
+                ]
+              },
               "shortDescription": {
                 "text": "unresolved function"
               }
@@ -490,12 +643,17 @@ expression: json_without_timing(&out)
                 "level": "error"
               },
               "fullDescription": {
-                "text": "unresolved relation or column. Run `cardinal explain E004` for details."
+                "text": "unresolved relation. Run `cardinal explain E004` for details."
               },
               "id": "E004",
-              "name": "unresolved relation or column",
+              "name": "unresolved relation",
+              "properties": {
+                "tags": [
+                  "layer:graph"
+                ]
+              },
               "shortDescription": {
-                "text": "unresolved relation or column"
+                "text": "unresolved relation"
               }
             },
             {
@@ -507,8 +665,31 @@ expression: json_without_timing(&out)
               },
               "id": "E005",
               "name": "unsupported SQL",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
               "shortDescription": {
                 "text": "unsupported SQL"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "unresolved column. Run `cardinal explain E006` for details."
+              },
+              "id": "E006",
+              "name": "unresolved column",
+              "properties": {
+                "tags": [
+                  "layer:node"
+                ]
+              },
+              "shortDescription": {
+                "text": "unresolved column"
               }
             }
           ],

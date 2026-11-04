@@ -32,8 +32,10 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
         baseline: None,
         state: None,
         min_severity: Severity::Info,
+        layers: &BTreeSet::new(),
+        no_sql: false,
     };
-    let findings = pipeline::collect(&project, &run, &selected, &opts);
+    let findings = pipeline::collect(&project, &run, &run.shapes(&project), &selected, &opts);
     let cov = coverage(&project, &run, &selected);
     let planned = selected
         .iter()

@@ -1,5 +1,7 @@
 //! P001 and P002: exactly-once contracts (meta.cardinal.exactly_once).
 //!
+//! A target that isn't a relation, or isn't upstream of the model, is D002 instead.
+//!
 //! P001: the analysis cannot show that the model contains each row of a named relation
 //! exactly once. Like a type checker, a contract fails unless it is proven.
 //!
@@ -9,10 +11,28 @@
 //! Both run after analysis on cached verdicts, since which tests check an assumption
 //! can change without the model changing.
 
-use crate::Locator;
+use crate::{Locator, ProjectCheck, ProjectContext};
 use cardinal_dbt::{Assumption, Project, Relation, RelationId};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
 use cardinal_grain::{Half, Reason, Site, Verdict};
+
+pub struct ExactlyOnceContracts;
+
+impl ProjectCheck for ExactlyOnceContracts {
+    fn codes(&self) -> &'static [Code] {
+        &[Code::P001, Code::P002]
+    }
+    fn needs_sql(&self) -> bool {
+        true
+    }
+    fn run(&self, cx: &ProjectContext<'_>, out: &mut Vec<Diagnostic>) {
+        for id in cx.selected {
+            if let (Some(shape), Some(rel)) = (cx.shapes.get(id), cx.project.get(id)) {
+                contract_findings(cx.project, rel, &shape.verdicts, cx.locator, out);
+            }
+        }
+    }
+}
 
 pub fn contract_findings(
     project: &Project,
@@ -23,28 +43,13 @@ pub fn contract_findings(
 ) {
     let display = |id: &RelationId| locator.display(id);
     let model = &rel.id;
-    for e in rel.exactly_once.iter().filter(|e| e.relation.is_none()) {
-        out.push(Diagnostic {
-            code: Code::P001,
-            severity: Code::P001.default_severity(),
-            relation: model.0.clone(),
-            message: format!(
-                "exactly_once names `{}`, which is not a model, seed, snapshot or source",
-                e.name
-            ),
-            primary: locator.label(model, None, "in meta.cardinal.exactly_once".into()),
-            secondary: vec![],
-            notes: vec![],
-            fix: Some(Fix {
-                message: "use a model name, or source_name.table_name for a source".into(),
-                replacement: None,
-            }),
-            evidence: vec![],
-            fingerprint: normalize_text(&e.name),
-        });
-    }
+    // Targets that aren't relations, or that the model doesn't read, are D002.
+    let ancestors = project.ancestors(model);
+    let upstream = |t: &RelationId| ancestors.contains(t);
     for e in &rel.exactly_once {
-        let Some(target) = &e.relation else { continue };
+        let Some(target) = e.relation.as_ref().filter(|t| upstream(t)) else {
+            continue;
+        };
         if !verdicts.iter().any(|v| v.declared && &v.relation == target) {
             out.push(Diagnostic {
                 code: Code::P001,
@@ -67,7 +72,10 @@ pub fn contract_findings(
             });
         }
     }
-    for v in verdicts.iter().filter(|v| v.declared) {
+    for v in verdicts
+        .iter()
+        .filter(|v| v.declared && upstream(&v.relation))
+    {
         if v.exactly_once() {
             unchecked(project, rel, v, locator, out);
         } else {

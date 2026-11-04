@@ -3,13 +3,13 @@
 
 use crate::config::{Level, Severities};
 use crate::engine::ProjectLocator;
-use crate::engine::{RunResult, statuses};
+use crate::engine::RunResult;
 use crate::state::Comparison;
-use cardinal_check::{UnknownGrainModel, contract_findings, unknown_grain};
+use cardinal_check::{ProjectContext, Shapes, project_checks, root_causes};
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::suppress::{self, Suppression};
-use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};
+use cardinal_diag::{Code, Diagnostic, Fix, Label, Layer, Severity, normalize_text};
 use cardinal_grain::UnknownReason;
 use cardinal_sql::{LineCol, SqlSpan};
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,55 +40,61 @@ pub struct Options<'a> {
     /// The comparison with the base branch, with --state.
     pub state: Option<&'a Comparison>,
     pub min_severity: Severity,
+    /// Layers to report; empty means all.
+    pub layers: &'a BTreeSet<Layer>,
+    /// No SQL was analyzed (only graph and node selected): run only the checks that
+    /// read just the manifest and catalog.
+    pub no_sql: bool,
 }
 
 pub fn collect(
     project: &Project,
     run: &RunResult,
+    shapes: &Shapes,
     selected: &BTreeSet<RelationId>,
     opts: &Options<'_>,
 ) -> Findings {
+    let in_layers = |c: Code| layer_selected(c, opts.layers);
     let mut raw: Vec<Diagnostic> = Vec::new();
     let locator = ProjectLocator { project };
     for id in selected {
         if let Some(r) = run.results.get(id) {
             raw.extend(r.diagnostics.iter().cloned());
-            if let Some(rel) = project.get(id) {
-                contract_findings(project, rel, &r.verdicts, &locator, &mut raw);
-            }
+        }
+    }
+    let cx = ProjectContext {
+        project,
+        shapes,
+        selected,
+        locator: &locator,
+    };
+    for check in project_checks() {
+        if opts.no_sql && check.needs_sql() {
+            continue;
+        }
+        if check.codes().iter().any(|c| in_layers(*c)) {
+            check.run(&cx, &mut raw);
         }
     }
     if let Some(c) = opts.state {
         raw.extend(c.findings.iter().cloned());
     }
+    raw.retain(|d| in_layers(d.code));
+    without_blocked(&mut raw);
 
-    // G004: once per root cause, over the selected models.
-    let st = statuses(run);
-    let unknown: Vec<UnknownGrainModel> = selected
-        .iter()
-        .filter(|id| project.get(id).is_some_and(|r| r.is_model()))
-        .filter_map(|id| {
-            run.results.get(id).map(|r| UnknownGrainModel {
-                id: id.clone(),
-                status: r.summary.status.clone(),
+    // Root causes of unknown grain, for the Next: line and coverage, in every layer.
+    let root_causes = if opts.no_sql {
+        vec![]
+    } else {
+        root_causes(&cx)
+            .into_iter()
+            .map(|(root, reason, affected, _)| RootCause {
+                root,
+                reason,
+                affected,
             })
-        })
-        .collect();
-    let mut root_causes = Vec::new();
-    for (root, reason, affected, d) in unknown_grain(project, &unknown, &st) {
-        // A model that failed to plan already has its E-code; its own G004 adds nothing
-        // unless other models are blocked by it.
-        let only_self =
-            matches!(reason, UnknownReason::PlanError(_)) && affected == vec![root.clone()];
-        if !only_self {
-            raw.push(d);
-        }
-        root_causes.push(RootCause {
-            root,
-            reason,
-            affected,
-        });
-    }
+            .collect()
+    };
 
     // Suppressions in the selected models' source files.
     let mut sups: Vec<(Suppression, bool)> = Vec::new();
@@ -133,8 +139,13 @@ pub fn collect(
     }
     for (s, used) in &sups {
         // allow(P003) acknowledges a change against the base branch; once the change
-        // is merged it matches nothing, as expected.
-        if !used && s.codes.iter().any(|c| *c != Code::P003) {
+        // is merged it matches nothing, as expected. A suppression of a code in a layer
+        // that wasn't checked can't be judged stale.
+        if !used
+            && in_layers(Code::G005)
+            && s.codes.iter().any(|c| *c != Code::P003)
+            && s.codes.iter().all(|c| in_layers(*c))
+        {
             let model = project
                 .models()
                 .find(|r| r.file == s.file)
@@ -203,6 +214,8 @@ pub fn collect(
             && a.fingerprint == b.fingerprint
             && a.primary == b.primary
     });
+    // In layer order: code, graph, node, operator.
+    all.sort_by_key(|d| d.code.layer());
 
     let mut baselined = 0;
     let mut on_main = 0;
@@ -228,6 +241,37 @@ pub fn collect(
         all,
         root_causes,
     }
+}
+
+/// Whether findings with `code` are reported when `layers` are selected (empty = all).
+pub fn layer_selected(code: Code, layers: &BTreeSet<Layer>) -> bool {
+    layers.is_empty() || layers.contains(&code.layer())
+}
+
+/// Each layer depends on the ones before it. When Cardinal couldn't analyze a model at
+/// some layer (an E-code), its findings from later layers are dropped: they would rest
+/// on what failed.
+fn without_blocked(raw: &mut Vec<Diagnostic>) {
+    let mut failed: BTreeMap<String, Layer> = BTreeMap::new();
+    for d in raw.iter().filter(|d| d.code.is_tool_error()) {
+        let l = failed.entry(d.relation.clone()).or_insert(d.code.layer());
+        *l = (*l).min(d.code.layer());
+    }
+    raw.retain(|d| {
+        d.code.is_tool_error() || failed.get(&d.relation).is_none_or(|l| d.code.layer() <= *l)
+    });
+}
+
+/// Counts per code, grouped by layer.
+pub fn count_by_layer(findings: &[Diagnostic]) -> BTreeMap<Layer, BTreeMap<Code, usize>> {
+    let mut m: BTreeMap<Layer, BTreeMap<Code, usize>> = BTreeMap::new();
+    for d in findings {
+        *m.entry(d.code.layer())
+            .or_default()
+            .entry(d.code)
+            .or_default() += 1;
+    }
+    m
 }
 
 pub fn count_by_code(findings: &[Diagnostic]) -> BTreeMap<Code, usize> {

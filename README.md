@@ -109,6 +109,13 @@ Compared with main (state: prod-artifacts/): 1 guarantee lost, 2 gained, 41 kept
 
 The directory needs main's `manifest.json`; `catalog.json` is optional.
 
+Each `cardinal check` also writes `target/cardinal_shapes.json`: every model's shape
+contract (its key, columns, non-null columns, measures, and the rows of its parents it
+keeps), with what each rests on. If main's CI runs `cardinal check` and keeps that file
+with the other artifacts, `--state` reads main's shapes from it instead of analyzing
+main again. Cardinal uses the file only if the same Cardinal version wrote it from that
+`manifest.json`. Its format may change between beta releases.
+
 Without main's artifacts, commit a baseline of today's findings instead, and CI fails
 only on new ones:
 
@@ -147,21 +154,53 @@ of each setting.
 
 ## What it finds
 
-| Code | Default | Finds |
-| --- | --- | --- |
-| G001 | error | A join repeats a value, and a sum or count then adds it more than once |
-| G002 | warning | A declared key that the SQL doesn't guarantee |
-| G003 | warning | A many-to-many join |
-| G004 | info | Models Cardinal can't check because a key is unknown, grouped by cause |
-| G005 | warning | A suppression comment that no longer matches anything |
-| G006 | warning | An incremental model whose `unique_key` isn't unique |
-| G007 | warning | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is random |
-| G008 | warning | Adds up a number that can't be added: overlapping distinct counts (daily active users summed into monthly), averages, ratios, percentiles, or balances and running totals across dates |
-| G009 | error | Adds amounts in different units, such as `amount` across currencies (needs `unit`) |
-| P001 | error | An `exactly_once` contract that isn't proven |
-| P002 | warning | A proven contract that relies on something no test checks |
-| P003 | error | A guarantee main has that the branch loses (with `--state`) |
-| E001–E005 | error | SQL Cardinal couldn't read (missing, unparseable or unsupported) |
+Cardinal treats a dbt project as typed code: keys and grain are the types, and every
+SQL operator has a predictable effect on them. It checks four layers, each depending on
+the one before, like the stages of a compiler:
+
+| Layer | Checks | Decided from | Needs |
+| --- | --- | --- | --- |
+| **code** | each model's file: its compiled SQL exists and parses | compiled SQL | nothing |
+| **graph** | every `ref()` and every relation a declaration names resolves | manifest.json | code |
+| **node** | each model's declared shape: columns, types, grain | manifest + catalog | graph |
+| **operator** | each join, filter, aggregate, window and set operation, against the keys of what it reads | the plan + node declarations | node |
+
+When a model fails one layer, Cardinal reports that and nothing from the later layers
+for it: those findings would rest on what failed.
+
+The operator layer is a catalog of what each operator can get wrong:
+
+| Operator | What goes wrong | Code | Default |
+| --- | --- | --- | --- |
+| join | Fans out, and a sum or count then adds a repeated value more than once | G001 | error |
+| join | Many-to-many: neither side is unique on the join columns | G003 | warning |
+| filter | `NOT IN` over values that can be null keeps no rows; `WHERE` on a left join's null-filled side turns it into an inner join | G011 | warning |
+| aggregate | Adds up a number that can't be added: overlapping distinct counts, averages, ratios, percentiles, balances across dates | G008 | warning |
+| aggregate | Adds amounts in different units, such as `amount` across currencies (needs `unit`) | G009 | error |
+| window, dedup | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is random | G007 | warning |
+| set operation | `UNION` matches columns by position: a later branch's columns are swapped or named differently | G010 | warning, error when swapped |
+| the model | A declared key, or an incremental `unique_key`, that the SQL doesn't guarantee | G002, G006 | warning |
+| the model | An `exactly_once` contract that isn't proven, or rests on something no test checks | P001, P002 | error, warning |
+| the model | A guarantee main has that the branch loses (with `--state`) | P003 | error |
+
+And the other layers:
+
+| Code | Layer | Default | Finds |
+| --- | --- | --- | --- |
+| E001–E003 | code | error | No compiled SQL, SQL that doesn't parse, or an unknown function |
+| G005 | code | warning | A suppression comment that no longer matches anything |
+| E004 | graph | error | The SQL reads a relation that isn't in the manifest |
+| D002 | graph | warning, error for `exactly_once` | A declaration naming a relation that doesn't exist, or a contract on one the model doesn't read |
+| E006 | node | error | The SQL reads a column the relation doesn't have |
+| D001 | node | warning | A declaration naming a column the model doesn't have, so it's ignored |
+| G004 | node | info | Models Cardinal can't check because a key is unknown, grouped by cause |
+| E005 | operator | error | SQL Cardinal can't analyze yet |
+
+All layers run in one pass, because each model's operators are checked against its
+parents' shapes. To check only some layers, use `cardinal check --layer node,operator`
+(or `layers = [...]` in cardinal.toml). With only `graph` and `node`, Cardinal reads no
+SQL, so `cardinal check --layer graph,node` works on the output of `dbt parse`, as a
+first step in CI.
 
 To silence one finding, add a comment with a reason:
 

@@ -75,4 +75,4 @@ warning[G007]: lag() ordering can tie
   = see: cardinal explain G007
 
 Analyzed 11 models in <time>: 11 with a known key (100%).
-Findings: 1 error, 6 warnings (G002 ×1, G006 ×2, G007 ×4).
+Findings: 1 error, 6 warnings (operator: G002 ×1, G006 ×2, G007 ×4).

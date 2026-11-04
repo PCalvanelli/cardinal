@@ -176,6 +176,7 @@ fn label_json(l: &Label) -> Value {
 pub fn finding_json(d: &Diagnostic) -> Value {
     json!({
         "code": d.code.to_string(),
+        "layer": d.code.layer().to_string(),
         "severity": d.severity.to_string(),
         "model": d.relation,
         "message": d.message,
@@ -222,12 +223,14 @@ pub fn sarif(findings: &[Diagnostic]) -> String {
     let rules: Vec<Value> = ALL_CODES
         .iter()
         .map(|c| {
+            let tags = vec![format!("layer:{}", c.layer())];
             json!({
                 "id": c.to_string(),
                 "name": c.title(),
                 "shortDescription": {"text": c.title()},
                 "fullDescription": {"text": format!("{}. Run `cardinal explain {c}` for details.", c.title())},
                 "defaultConfiguration": {"level": sarif_level(c.default_severity())},
+                "properties": {"tags": tags},
             })
         })
         .collect();
@@ -259,7 +262,7 @@ pub fn sarif(findings: &[Diagnostic]) -> String {
                     v
                 }).collect::<Vec<_>>(),
                 "partialFingerprints": {"cardinalFingerprint/v1": format!("{}:{}:{}", d.code, d.relation, d.fingerprint)},
-                "properties": {"model": d.relation, "evidence": d.evidence},
+                "properties": {"model": d.relation, "layer": d.code.layer().to_string(), "evidence": d.evidence},
             })
         })
         .collect();

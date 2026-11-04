@@ -104,6 +104,10 @@ pub struct CheckArgs {
     /// Turn a code off
     #[arg(long, value_name = "CODE")]
     pub allow: Vec<String>,
+    /// Check only these layers: code, graph, node, operator (comma-separated; default all).
+    /// With only graph and node, no SQL is read, so this works on the output of dbt parse
+    #[arg(long, value_delimiter = ',', value_name = "LAYER")]
+    pub layer: Vec<String>,
     /// Parallelism (default: logical cores)
     #[arg(long, short, value_name = "N")]
     pub jobs: Option<usize>,
