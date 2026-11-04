@@ -129,6 +129,11 @@ fn build_fixture(path: &Path, name: &str) -> Result<()> {
     run(Command::new("dbt")
         .args(["run", "--profiles-dir", "."])
         .current_dir(path))?;
+    if path.join("snapshots").is_dir() {
+        run(Command::new("dbt")
+            .args(["snapshot", "--profiles-dir", "."])
+            .current_dir(path))?;
+    }
     run(Command::new("dbt")
         .args(["docs", "generate", "--profiles-dir", "."])
         .current_dir(path))?;

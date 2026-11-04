@@ -365,11 +365,55 @@ pub struct Unit {
 
 pub const MAX_MEASURES: usize = 32;
 
+/// Columns that sync tools set on rows deleted at the source, instead of deleting them:
+/// Fivetran (`true` when deleted), Stitch and Airbyte CDC (a timestamp when deleted).
+pub const SOFT_DELETE_FLAGS: &[&str] =
+    &["_fivetran_deleted", "_sdc_deleted_at", "_ab_cdc_deleted_at"];
+
+/// Where a model stopped carrying a soft-delete flag without filtering on it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FlagDrop {
+    pub model: RelationId,
+    /// The relation the model read the flag from: the source, or a model that carried it.
+    pub via: RelationId,
+}
+
+/// Rows of `relation` that its sync marks deleted in column `flag` are still here: no
+/// filter, join condition or aggregate on the way read the flag.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Deleted {
+    pub relation: RelationId,
+    pub flag: String,
+    /// The column holding the flag here, so a later model can still filter on it. None
+    /// once it is dropped.
+    pub col: Option<usize>,
+    /// Where it was dropped. None while it is carried, and on the node that drops it
+    /// until `Analyzer::visit` records the model.
+    pub dropped: Option<FlagDrop>,
+    /// The relation this node read the flag from (see `FlagDrop::via`).
+    pub via: RelationId,
+}
+
+impl Deleted {
+    pub fn remap(&self, f: impl Fn(usize) -> Option<usize>) -> Deleted {
+        Deleted {
+            col: self.col.and_then(f),
+            ..self.clone()
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RelationFacts {
     pub width: usize,
     /// Candidate keys. Empty means no key is known: rows are a bag.
     pub keys: Vec<Key>,
+    /// Keys that hold among the rows where all their columns are non-null: no two such
+    /// rows agree on them. An outer join makes these from the keys of the side it fills
+    /// with nulls, since its unmatched rows all hold nulls there. A dbt `unique` test
+    /// asserts exactly this, and an equality join never matches a null, so either can
+    /// rest on one. Promoted to a key once the SQL proves its columns non-null.
+    pub null_keys: Vec<Key>,
     /// Functional dependencies lhs -> rhs that hold in every row.
     pub fds: Vec<Fd>,
     /// Columns proven non-null (not merely typed non-null).
@@ -394,6 +438,8 @@ pub struct RelationFacts {
     /// Columns holding the result of a counting or summing aggregate (sum, count, avg),
     /// grouped or windowed. Dividing two of them makes a ratio.
     pub aggregated: ColSet,
+    /// Relations whose soft-deleted rows are still here (see `Deleted`).
+    pub deleted: Vec<Deleted>,
 }
 
 impl RelationFacts {
@@ -401,6 +447,7 @@ impl RelationFacts {
         RelationFacts {
             width,
             keys: vec![],
+            null_keys: vec![],
             fds: vec![],
             not_null: ColSet::new(),
             status: GrainStatus::Unknown(reason),
@@ -412,6 +459,7 @@ impl RelationFacts {
             measures: vec![],
             units: vec![],
             aggregated: ColSet::new(),
+            deleted: vec![],
         }
     }
 
@@ -445,6 +493,22 @@ impl RelationFacts {
             .iter()
             .any(|k| k.cols.is_subset(&c))
             .then_some(why)
+    }
+
+    /// The evidence that no two rows whose `x` columns are all non-null agree on `x`: `x`
+    /// is a superkey, or holds a null-exempt key's columns. None if neither.
+    pub fn null_exempt_superkey_why(&self, x: &ColSet) -> Option<Vec<EvidenceId>> {
+        self.superkey_why(x).or_else(|| {
+            self.null_keys
+                .iter()
+                .find(|k| k.cols.is_subset(x))
+                .map(|k| vec![k.why])
+        })
+    }
+
+    /// Whether no two rows whose `x` columns are all non-null agree on `x`.
+    pub fn is_null_exempt_superkey(&self, x: &ColSet) -> bool {
+        self.null_exempt_superkey_why(x).is_some()
     }
 
     /// Evidence for non-null columns `cols` that rest on declarations.
@@ -554,6 +618,19 @@ impl RelationFacts {
     /// Remove dominated keys and dependencies; reduce each key to a minimal set.
     pub fn normalize(&mut self) {
         let width = self.width;
+        // A null-exempt key whose columns the SQL proves non-null is a key. Columns non-null
+        // only by declaration stay out, since the key would then rest on the declaration.
+        let proven: ColSet = self
+            .not_null
+            .iter()
+            .copied()
+            .filter(|c| !self.nn_why.contains_key(c))
+            .collect();
+        let (promoted, null_keys): (Vec<Key>, Vec<Key>) = std::mem::take(&mut self.null_keys)
+            .into_iter()
+            .filter(|k| k.cols.iter().all(|c| *c < width))
+            .partition(|k| k.cols.is_subset(&proven));
+        self.keys.extend(promoted);
         let mut keys: Vec<Key> = Vec::new();
         let snapshot_keys = self.keys.clone();
         for k in snapshot_keys {
@@ -567,6 +644,20 @@ impl RelationFacts {
         keys.sort_by_key(|k| (k.cols.len(), k.cols.clone()));
         keys.truncate(MAX_KEYS);
         self.keys = keys;
+        // A null-exempt key that holds a key's columns says nothing more.
+        let mut weak: Vec<Key> = Vec::new();
+        for k in null_keys {
+            if self.keys.iter().any(|e| e.cols.is_subset(&k.cols))
+                || weak.iter().any(|e| e.cols.is_subset(&k.cols))
+            {
+                continue;
+            }
+            weak.retain(|e| !k.cols.is_subset(&e.cols));
+            weak.push(k);
+        }
+        weak.sort_by_key(|k| (k.cols.len(), k.cols.clone()));
+        weak.truncate(MAX_KEYS);
+        self.null_keys = weak;
 
         let mut fds: Vec<Fd> = Vec::new();
         for mut f in std::mem::take(&mut self.fds) {
@@ -609,6 +700,15 @@ impl RelationFacts {
         units.truncate(MAX_MEASURES);
         self.units = units;
         self.aggregated.retain(|c| *c < width);
+        let mut deleted: Vec<Deleted> = Vec::new();
+        for mut d in std::mem::take(&mut self.deleted) {
+            d.col = d.col.filter(|c| *c < width);
+            if !deleted.contains(&d) {
+                deleted.push(d);
+            }
+        }
+        deleted.truncate(MAX_MEASURES);
+        self.deleted = deleted;
     }
 
     /// Columns of this node that a copy of `kept` determines in place of `target`: `target`
@@ -769,6 +869,7 @@ mod tests {
                 cols: set(&[0, 1]),
                 why: EvidenceId(0),
             }],
+            null_keys: vec![],
             fds: vec![Fd {
                 lhs: set(&[0]),
                 rhs: set(&[2]),
@@ -785,6 +886,7 @@ mod tests {
             measures: vec![],
             units: vec![],
             aggregated: ColSet::new(),
+            deleted: vec![],
         };
         assert_eq!(f.closure(&set(&[0])), set(&[0, 2]));
         assert!(f.is_superkey(&set(&[0, 1])));

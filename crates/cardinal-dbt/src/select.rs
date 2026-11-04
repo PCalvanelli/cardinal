@@ -22,7 +22,7 @@ pub fn select(project: &Project, selectors: &[String]) -> Result<BTreeSet<Relati
         {
             let p = path.trim_end_matches('/');
             project
-                .models()
+                .checked()
                 .filter(|r| {
                     r.file == p
                         || r.file.starts_with(&format!("{p}/"))
@@ -62,7 +62,7 @@ pub fn select(project: &Project, selectors: &[String]) -> Result<BTreeSet<Relati
 /// plus their descendants.
 pub fn changed(project: &Project, files: &[String]) -> BTreeSet<RelationId> {
     let mut out = BTreeSet::new();
-    for r in project.models() {
+    for r in project.checked() {
         if files
             .iter()
             .any(|f| f == &r.file || f.ends_with(&format!("/{}", r.file)))

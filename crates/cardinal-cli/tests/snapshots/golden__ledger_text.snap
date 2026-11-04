@@ -2,7 +2,7 @@
 source: crates/cardinal-cli/tests/golden.rs
 expression: out
 ---
-error[G006]: unique_key (payment_key) names columns the model doesn't output
+error[G006]: incremental unique_key (payment_key) names columns the SQL doesn't output
  --> models/marts/inc_missing_key.sql
   |
   = missing: payment_key
@@ -12,9 +12,10 @@ error[G006]: unique_key (payment_key) names columns the model doesn't output
   = see: cardinal explain G006
 
 warning[G006]: incremental unique_key (order_id) isn't unique: the SQL can return several rows per (order_id)
- --> models/marts/inc_order_payments.sql
+ --> models/marts/inc_order_payments.sql:5:1
   |
-  = the SQL guarantees one row per (payment_id)
+5 | join {{ source('ledger', 'payments') }} p on p.order_id = o.order_id
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ one-to-many: rows repeat per row of ledger.payments, so (order_id) repeats
   |
   = note: unique_key = order_id, incremental_strategy: the adapter's default strategy
   = note: two new rows with the same (order_id) make merge fail or pick one at random, and delete+insert keeps both

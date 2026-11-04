@@ -282,7 +282,9 @@ pub fn verdict(model: &AnalyzedModel, target: &RelationSummary, declared: bool) 
         }
         Some(cols) => {
             v.cols = col_names(&cols);
-            match facts.superkey_why(&cols) {
+            // Rows where these columns are null carry no row of the relation, whose key is
+            // non-null, so a key among non-null values is enough (an outer join's).
+            match facts.null_exempt_superkey_why(&cols) {
                 Some(w) => whys.extend(w),
                 None => {
                     let mut reasons: Vec<Reason> = Vec::new();

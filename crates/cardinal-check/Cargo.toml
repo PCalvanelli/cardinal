@@ -1,6 +1,6 @@
 [package]
 name = "cardinal-check"
-description = "Cardinal's checks in three invariant layers (graph, node, code) over one analysis"
+description = "Cardinal's checks in four invariant layers (code, graph, node, operator) over one analysis"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

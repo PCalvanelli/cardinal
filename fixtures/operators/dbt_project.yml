@@ -1,0 +1,10 @@
+name: operators
+version: "1.0.0"
+config-version: 2
+profile: operators
+model-paths: ["models"]
+snapshot-paths: ["snapshots"]
+target-path: "target"
+models:
+  operators:
+    +materialized: view

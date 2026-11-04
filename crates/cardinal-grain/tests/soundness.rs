@@ -309,6 +309,42 @@ const BASES: &[(&str, &str)] = &[
     ),
 ];
 
+// Null-exempt keys: the side an outer join fills with nulls, and joins on its key.
+const OUTER: &[(&str, &str)] = &[
+    (
+        "select a.id, b.id as bid, b.z from a left join b on a.id = b.a_id",
+        "bid",
+    ),
+    (
+        "select b.id as bid, a.id from b right join a on b.a_id = a.id",
+        "bid",
+    ),
+    (
+        "select a.id, b.id as bid from a full join b on a.id = b.a_id",
+        "bid",
+    ),
+    (
+        "select a.id, b.id as bid from a full join b on a.id = b.id",
+        "bid",
+    ),
+    (
+        "select t.bid, d.id from (select a.id, b.id as bid from a left join b on a.id = b.a_id) t join d on t.bid = d.a_id",
+        "bid",
+    ),
+    (
+        "select d.id, t.z from d join (select b.id as bid, b.z from a left join b on a.id = b.a_id) t on d.a_id = t.bid",
+        "id",
+    ),
+    (
+        "select d.id, t.z from d left join (select b.id as bid, b.z from a left join b on a.id = b.a_id) t on d.a_id = t.bid",
+        "id",
+    ),
+    (
+        "select a.id, t.bid from a left join (select b.id as bid, b.a_id from a join b on a.id = b.a_id) t on a.id = t.a_id",
+        "bid",
+    ),
+];
+
 fn wrap(sql: &str, first: &str) -> Vec<String> {
     vec![
         sql.to_string(),
@@ -323,7 +359,11 @@ fn wrap(sql: &str, first: &str) -> Vec<String> {
 }
 
 fn corpus() -> Vec<String> {
-    BASES.iter().flat_map(|(s, f)| wrap(s, f)).collect()
+    BASES
+        .iter()
+        .chain(OUTER)
+        .flat_map(|(s, f)| wrap(s, f))
+        .collect()
 }
 
 fn cardinal_tables() -> Tables {
@@ -483,6 +523,18 @@ fn check(a: &Analyzed, rows: &[Vec<String>], data: &[Rows]) -> Result<(), String
         for r in rows {
             if !seen.insert(project(r, &k.cols)) {
                 return Err(format!("key {:?} has duplicates in {rows:?}", k.cols));
+            }
+        }
+    }
+    for k in &f.null_keys {
+        let mut seen = BTreeSet::new();
+        for r in rows {
+            let v = project(r, &k.cols);
+            if v.iter().all(|x| x != "∅") && !seen.insert(v) {
+                return Err(format!(
+                    "null-exempt key {:?} has duplicates in {rows:?}",
+                    k.cols
+                ));
             }
         }
     }

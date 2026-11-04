@@ -3,14 +3,14 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
 use crate::facts::{
-    Cardinality, ColSet, Computed, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key, LossSite,
-    MAX_KEYS, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, Unit, UnknownReason,
-    closure, minimize,
+    Cardinality, ColSet, Computed, Deleted, DistinctSite, Fd, FlagDrop, GrainStatus, Ind, JoinSite,
+    Key, LossSite, MAX_KEYS, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, Unit,
+    UnknownReason, closure, minimize,
 };
 use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-use cardinal_sql::datafusion_common::{Column, DFSchema, ScalarValue};
+use cardinal_sql::datafusion_common::{Column, DFSchema, NullEquality, ScalarValue};
 use cardinal_sql::datafusion_expr::expr::{Alias, WindowFunction};
 use cardinal_sql::datafusion_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, JoinType, Projection, TableScan, Union, Window,
@@ -522,9 +522,21 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
         .iter()
         .filter_map(|(c, w)| to(*c).map(|j| (j, *w)))
         .collect();
+    // A null-exempt key survives where each of its columns is copied as is.
+    let null_keys = input
+        .null_keys
+        .iter()
+        .filter_map(|k| {
+            Some(Key {
+                cols: k.cols.iter().map(|c| to(*c)).collect::<Option<ColSet>>()?,
+                why: k.why,
+            })
+        })
+        .collect();
     let mut f = RelationFacts {
         width: m,
         keys,
+        null_keys,
         fds,
         not_null,
         status: input.status.clone(),
@@ -543,10 +555,46 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
         measures,
         units,
         aggregated: input.aggregated.iter().filter_map(|c| to(*c)).collect(),
+        deleted: carry_deleted(&input.deleted, outs),
     };
     f.normalize();
     f.settle_status(input.status.clone());
     f
+}
+
+/// Soft-delete flags on the outputs of a projection-like node. A flag read by an
+/// expression (`coalesce(_fivetran_deleted, false) as deleted`) is still carried, in
+/// that column.
+fn carry_deleted(deleted: &[Deleted], outs: &[Out]) -> Vec<Deleted> {
+    deleted
+        .iter()
+        .map(|d| {
+            let col = d.col.and_then(|c| {
+                outs.iter()
+                    .position(|o| matches!(o, Out::Col(p) if *p == c))
+                    .or_else(|| {
+                        outs.iter()
+                            .position(|o| matches!(o, Out::Expr { cols, .. } if cols.contains(&c)))
+                    })
+            });
+            Deleted { col, ..d.clone() }
+        })
+        .collect()
+}
+
+/// Drop the soft-delete flags that `exprs` read: a filter, join condition or aggregate
+/// that reads one applies it, or at least decides what to do with deleted rows.
+fn apply_flags<'e>(
+    deleted: &mut Vec<Deleted>,
+    exprs: impl IntoIterator<Item = &'e Expr>,
+    schema: &DFSchema,
+) {
+    let read: ColSet = exprs
+        .into_iter()
+        .flat_map(|e| e.column_refs())
+        .filter_map(|c| col_index(schema, c))
+        .collect();
+    deleted.retain(|d| !d.col.is_some_and(|c| read.contains(&c)));
 }
 
 /// The integer value of a literal, through casts.
@@ -656,7 +704,17 @@ impl Analyzer<'_> {
         if let Some(f) = self.facts.get(&node_id(plan)) {
             return f.clone();
         }
-        let facts = Arc::new(self.rule(plan));
+        let mut facts = self.rule(plan);
+        // A soft-delete flag dropped by this node was dropped by this model.
+        for d in &mut facts.deleted {
+            if d.col.is_none() && d.dropped.is_none() {
+                d.dropped = Some(FlagDrop {
+                    model: self.relation.clone(),
+                    via: d.via.clone(),
+                });
+            }
+        }
+        let facts = Arc::new(facts);
         debug_assert_eq!(
             facts.width,
             plan.schema().fields().len(),
@@ -949,6 +1007,7 @@ impl Analyzer<'_> {
         let schema = f.input.schema();
         let text = SourceText::new(self.sql);
         let conjuncts = split_conjunction(&f.predicate);
+        apply_flags(&mut facts.deleted, conjuncts.iter().copied(), schema);
         self.filter_covers(&conjuncts, schema, &input, &mut facts);
         for conj in conjuncts {
             match conj {
@@ -1404,6 +1463,11 @@ impl Analyzer<'_> {
             outs.push(Out::Opaque { non_null });
         }
         let mut f = project_facts(&input, &outs);
+        // An aggregate that reads a flag (`count_if(not _fivetran_deleted)`) decides what
+        // to do with deleted rows.
+        let mut deleted = input.deleted.clone();
+        apply_flags(&mut deleted, &a.aggr_expr, schema);
+        f.deleted = carry_deleted(&deleted, &outs);
         let g = a.group_expr.len();
         let group: ColSet = (0..g).collect();
         let at = a
@@ -1619,6 +1683,8 @@ impl Analyzer<'_> {
             covers,
             within,
             nn_why,
+            // Branch columns line up by position.
+            deleted: branches.iter().flat_map(|b| b.deleted.clone()).collect(),
             ..RelationFacts::unknown(width, UnknownReason::UnsupportedOperator(String::new()))
         };
         // A constant discriminator column with distinct literals per branch, plus a key
@@ -1724,9 +1790,24 @@ impl Analyzer<'_> {
         }
         let a_cols: ColSet = pairs.iter().map(|p| p.0).collect();
         let b_cols: ColSet = pairs.iter().map(|p| p.1).collect();
-        // Non-equality conditions never make a side unique on their own.
-        let left_unique = l.is_superkey(&a_cols);
-        let right_unique = r.is_superkey(&b_cols);
+        // A side is unique on its join columns when they are a superkey of it. With plain
+        // `=`, a null matches nothing, so a key that holds only among non-null values (an
+        // outer join's, or a `unique` test's) is enough: rows with a null there match no
+        // row at all. Non-equality conditions never make a side unique on their own.
+        let null_rejecting = j.null_equality == NullEquality::NullEqualsNothing;
+        let unique_why = |f: &RelationFacts, cols: &ColSet| -> Option<Vec<EvidenceId>> {
+            if null_rejecting && !cols.is_empty() {
+                f.null_exempt_superkey_why(cols)
+            } else {
+                f.superkey_why(cols)
+            }
+        };
+        let left_unique_why = unique_why(&l, &a_cols);
+        let right_unique_why = unique_why(&r, &b_cols);
+        let left_unique = left_unique_why.is_some();
+        let right_unique = right_unique_why.is_some();
+        let left_unique_why = left_unique_why.unwrap_or_default();
+        let right_unique_why = right_unique_why.unwrap_or_default();
         let left_decided = left_unique || l.status.is_known();
         let right_decided = right_unique || r.status.is_known();
         let cardinality =
@@ -1925,8 +2006,6 @@ impl Analyzer<'_> {
         if right_kept.is_ok() && left_unique {
             ranks.extend(r.ranks.iter().map(|(c, p)| (c + nl, shift(p))));
         }
-        let left_unique_why = l.superkey_why(&a_cols).unwrap_or_default();
-        let right_unique_why = r.superkey_why(&b_cols).unwrap_or_default();
 
         let left_all: ColSet = (0..nl).collect();
         let right_all: ColSet = (nl..nl + nr).collect();
@@ -2031,6 +2110,55 @@ impl Analyzer<'_> {
                 );
             }
         }
+        // A side whose rows each appear at most once, but which the join fills with nulls
+        // on the other side's unmatched rows, keeps its keys among the rows where they
+        // are non-null: every unmatched row holds nulls there. Its null-exempt keys hold
+        // whenever its rows appear at most once.
+        let mut null_keys: Vec<Key> = Vec::new();
+        if right_unique {
+            if !preserve_left {
+                for k in &l.keys {
+                    kept(
+                        k,
+                        k.cols.clone(),
+                        &right_unique_why,
+                        &mut self.arena,
+                        &mut null_keys,
+                    );
+                }
+            }
+            for k in &l.null_keys {
+                kept(
+                    k,
+                    k.cols.clone(),
+                    &right_unique_why,
+                    &mut self.arena,
+                    &mut null_keys,
+                );
+            }
+        }
+        if left_unique {
+            if !preserve_right {
+                for k in &r.keys {
+                    kept(
+                        k,
+                        shift(&k.cols),
+                        &left_unique_why,
+                        &mut self.arena,
+                        &mut null_keys,
+                    );
+                }
+            }
+            for k in &r.null_keys {
+                kept(
+                    k,
+                    shift(&k.cols),
+                    &left_unique_why,
+                    &mut self.arena,
+                    &mut null_keys,
+                );
+            }
+        }
         let one_side_kept = (right_unique && preserve_left) || (left_unique && preserve_right);
         if !one_side_kept {
             'outer: for kl in &l.keys {
@@ -2102,6 +2230,7 @@ impl Analyzer<'_> {
         let mut f = RelationFacts {
             width,
             keys,
+            null_keys,
             fds,
             not_null,
             status: GrainStatus::Known,
@@ -2134,6 +2263,24 @@ impl Analyzer<'_> {
                 .copied()
                 .chain(r.aggregated.iter().map(|c| c + nl))
                 .collect(),
+            deleted: {
+                // A join condition that reads a flag (`and not o._fivetran_deleted`)
+                // applies it.
+                let mut d: Vec<Deleted> = l
+                    .deleted
+                    .iter()
+                    .cloned()
+                    .chain(r.deleted.iter().map(|d| d.remap(|c| Some(c + nl))))
+                    .collect();
+                apply_flags(
+                    &mut d,
+                    j.on.iter()
+                        .flat_map(|(a, b)| [a, b])
+                        .chain(j.filter.as_ref()),
+                    &j.schema,
+                );
+                d
+            },
         };
         f.normalize();
         f.settle_status(GrainStatus::combine([&l.status, &r.status]));

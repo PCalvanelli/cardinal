@@ -429,7 +429,7 @@ fn guarantees_json_summary() {
     assert_eq!(c["state"], "state", "{v}");
     assert_eq!(c["guarantees_lost"], 7, "{v}");
     assert_eq!(c["guarantees_gained"], 1, "{v}");
-    assert_eq!(c["guarantees_kept"], 16, "{v}");
+    assert_eq!(c["guarantees_kept"], 17, "{v}");
     assert_eq!(c["findings_on_main"], 1, "{v}");
     assert_eq!(v["summary"]["findings_by_code"]["P003"], 3, "{v}");
     assert_eq!(v["summary"]["suppressed"], 1, "{v}");
@@ -1130,4 +1130,67 @@ fn set_op_and_null_filter_rules_end_to_end() {
         "{out}"
     );
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn operators_text() {
+    let (out, code) = cardinal(&fixture("operators"), &["check", "--no-cache"]);
+    assert_eq!(code, 0, "the new codes are warnings: {out}");
+    insta::assert_snapshot!(out);
+}
+
+/// Each new operator code fires on exactly the models built to trip it, and the left
+/// join from a dimension proves its exactly_once contract (null-exempt keys).
+#[test]
+fn operators_fire_where_expected() {
+    let (out, _) = cardinal(&fixture("operators"), &["check", "--no-cache"]);
+    let lines: Vec<&str> = out.lines().collect();
+    let at = |code: &str| -> Vec<String> {
+        let mut v: Vec<String> = lines
+            .windows(2)
+            .filter(|w| w[0].starts_with(&format!("warning[{code}]")))
+            .map(|w| {
+                let loc = w[1].trim_start_matches(" --> ");
+                loc.split(':').next().unwrap_or(loc).to_string()
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        at("G006"),
+        vec!["snapshots/customers_snapshot.sql"],
+        "{out}"
+    );
+    assert_eq!(
+        at("G012"),
+        vec!["models/marts/money_movements.sql"],
+        "{out}"
+    );
+    assert_eq!(
+        at("G013"),
+        vec!["models/marts/customer_order_counts.sql"],
+        "{out}"
+    );
+    assert_eq!(
+        at("G014"),
+        vec![
+            "models/marts/order_totals_by_customer.sql",
+            "models/staging/stg_orders_all.sql"
+        ],
+        "{out}"
+    );
+    assert!(
+        out.contains("Contracts: 1 of 1 exactly_once contract proven."),
+        "{out}"
+    );
+}
+
+#[test]
+fn explain_operator_catalog_codes() {
+    for code in ["G012", "G013", "G014"] {
+        let (out, status) = cardinal(&fixture("operators"), &["explain", code]);
+        assert_eq!(status, 0);
+        assert!(out.starts_with(&format!("# {code}:")), "{out}");
+    }
 }
