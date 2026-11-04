@@ -210,6 +210,8 @@ impl<'a> Engine<'a> {
             .add_json(&rel.incremental)
             .add_json(&rel.references)
             .add_json(&rel.exactly_once)
+            .add_json(&rel.measures)
+            .add_json(&rel.units)
             .add(cardinal_check::CHECKS_FINGERPRINT.as_bytes());
         for d in &rel.depends_on {
             k.add(d.0.as_bytes());

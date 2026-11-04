@@ -765,3 +765,30 @@ fn measures_g008_evidence_names_what_the_grouping_misses() {
         "{avg:?}"
     );
 }
+
+#[test]
+fn measure_declarations_invalidate_the_cache() {
+    let dir = fixture_copy("measures", "measure-cache", &[]);
+    let (out, _) = cardinal(&dir, &["describe", "customer_aov"]);
+    assert!(out.contains("avg_order_value  average"), "{out}");
+
+    // Declare the column additive in YAML: the SQL is unchanged, so only the
+    // declaration can tell the cache the summary is out of date.
+    let path = dir.join("target/manifest.json");
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    m["nodes"]["model.measures.customer_aov"]["columns"] = serde_json::json!({
+        "avg_order_value": {
+            "name": "avg_order_value",
+            "meta": {"cardinal": {"measure": "additive"}}
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&m).unwrap()).unwrap();
+
+    let (out, _) = cardinal(&dir, &["describe", "customer_aov"]);
+    assert!(
+        !out.contains("avg_order_value  average"),
+        "a cached summary hid the new declaration:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
