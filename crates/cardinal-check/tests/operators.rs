@@ -1,7 +1,11 @@
-//! Operator-layer checks on single SQL statements: G010 (set operations by position)
-//! and G011 (filters that drop nulls).
+//! Operator-layer checks on single SQL statements: G010 (set operations by position),
+//! G011 (filters that drop nulls), G012 (UNION merging rows), G013 (count(*) over an
+//! outer join) and G014 (soft-delete flags dropped).
 
-use cardinal_check::{Check, CheckContext, FilterDropsNulls, Locator, SetOpByPosition};
+use cardinal_check::{
+    Check, CheckContext, CountOuterJoin, FilterDropsNulls, Locator, SetOpByPosition,
+    SoftDeleteDropped, UnionMergesRows,
+};
 use cardinal_dbt::RelationId;
 use cardinal_diag::{Code, Diagnostic, Label, Severity};
 use cardinal_grain::testing::{Tables, analyze_sql, functions, key, no_key, test_relation};
@@ -40,6 +44,25 @@ fn tables() -> Tables {
         &[key(&["order_id"])],
     );
     t.add("blocked", &["customer_id", "reason"], &[no_key()]);
+    t.add(
+        "payments",
+        &["payment_id", "customer_id", "amount"],
+        &[key(&["payment_id"])],
+    );
+    t.add(
+        "refunds",
+        &["refund_id", "customer_id", "amount"],
+        &[key(&["refund_id"])],
+    );
+    t.set_type("payments", "amount", "Decimal128(10, 2)");
+    t.set_type("refunds", "amount", "Decimal128(10, 2)");
+    t.add(
+        "raw_orders",
+        &["order_id", "customer_id", "amount", "_fivetran_deleted"],
+        &[key(&["order_id"])],
+    );
+    t.set_type("raw_orders", "_fivetran_deleted", "Boolean");
+    t.soft_delete("raw_orders", "_fivetran_deleted");
     t
 }
 
@@ -249,9 +272,171 @@ fn deliberate_null_handling_is_fine() {
     }
 }
 
+// ---- G012: UNION merges rows -------------------------------------------------------
+
+#[test]
+fn union_of_amounts_without_keys_merges_rows() {
+    let out = run(
+        &UnionMergesRows,
+        &tables(),
+        "select customer_id, amount from payments
+         union
+         select customer_id, amount from refunds",
+    );
+    assert_eq!(out.len(), 1, "{out:#?}");
+    let d = &out[0];
+    assert!(d.message.contains("amount"), "{d:#?}");
+    let span = d.primary.span.expect("points at UNION");
+    assert_eq!((span.start.line, span.start.col), (2, 10), "{d:#?}");
+    let fix = d.fix.as_ref().unwrap().message.as_str();
+    assert!(
+        fix.contains("UNION ALL") && fix.contains("(payment_id)"),
+        "{fix}"
+    );
+}
+
+#[test]
+fn union_that_loses_nothing_is_fine() {
+    for sql in [
+        // UNION ALL keeps every row.
+        "select customer_id, amount from payments union all select customer_id, amount from refunds",
+        // Identifiers only: a deliberate de-duplication.
+        "select customer_id from payments union select customer_id from refunds",
+        // Each branch keeps its key, so its rows are distinct.
+        "select payment_id, customer_id, amount from payments
+         union select refund_id, customer_id, amount from refunds",
+    ] {
+        let out = run(&UnionMergesRows, &tables(), sql);
+        assert!(out.is_empty(), "{sql}\n{out:#?}");
+    }
+}
+
+// ---- G013: count(*) over an outer join ------------------------------------------------
+
+#[test]
+fn count_star_over_left_join_counts_unmatched_rows() {
+    let out = run(
+        &CountOuterJoin,
+        &tables(),
+        "select c.customer_id, count(*) as order_count
+         from customers c
+         left join orders o on c.customer_id = o.customer_id
+         group by c.customer_id",
+    );
+    assert_eq!(out.len(), 1, "{out:#?}");
+    let d = &out[0];
+    assert_eq!(
+        d.message,
+        "count(*) counts 1, not 0, for customers rows with no orders row"
+    );
+    let span = d.primary.span.expect("points at count(*)");
+    assert_eq!((span.start.line, span.start.col), (1, 23), "{d:#?}");
+    assert_eq!(
+        d.fix.as_ref().unwrap().message,
+        "count a column of orders that is null on unmatched rows: count(o.customer_id)"
+    );
+    assert_eq!(d.secondary.len(), 1, "points at the join: {d:#?}");
+}
+
+#[test]
+fn counts_that_skip_unmatched_rows_are_fine() {
+    for sql in [
+        // Counting the joined side's column skips the nulls.
+        "select c.customer_id, count(o.order_id) as n from customers c
+           left join orders o on c.customer_id = o.customer_id group by c.customer_id",
+        // Distinct counts too, and inner joins have no unmatched rows.
+        "select c.customer_id, count(distinct o.order_id) as n from customers c
+           left join orders o on c.customer_id = o.customer_id group by c.customer_id",
+        "select c.customer_id, count(*) as n from customers c
+           join orders o on c.customer_id = o.customer_id group by c.customer_id",
+        // A lookup: each order has one customer, so count(*) counts orders.
+        "select o.customer_id, count(*) as n from orders o
+           left join customers c on o.customer_id = c.customer_id group by o.customer_id",
+        // Grouping by the joined side's column puts unmatched rows in their own group.
+        "select o.status, count(*) as n from customers c
+           left join orders o on c.customer_id = o.customer_id group by o.status",
+        // A WHERE on the joined side drops unmatched rows (G011 reports it).
+        "select c.customer_id, count(*) as n from customers c
+           left join orders o on c.customer_id = o.customer_id
+           where o.status = 'paid' group by c.customer_id",
+    ] {
+        let out = run(&CountOuterJoin, &tables(), sql);
+        assert!(out.is_empty(), "{sql}\n{out:#?}");
+    }
+}
+
+#[test]
+fn count_of_preserved_column_and_right_join() {
+    let out = run(
+        &CountOuterJoin,
+        &tables(),
+        "select c.region, count(c.customer_id) as n
+         from orders o
+         right join customers c on o.customer_id = c.customer_id
+         group by c.region",
+    );
+    assert_eq!(out.len(), 1, "{out:#?}");
+    assert!(
+        out[0].message.starts_with("count(c.customer_id) counts 1"),
+        "{out:#?}"
+    );
+}
+
+// ---- G014: soft-delete flags ----------------------------------------------------------
+
+#[test]
+fn dropping_the_flag_without_a_filter_keeps_deleted_rows() {
+    let out = run(
+        &SoftDeleteDropped,
+        &tables(),
+        "select order_id, customer_id, amount from raw_orders",
+    );
+    assert_eq!(out.len(), 1, "{out:#?}");
+    let d = &out[0];
+    assert!(
+        d.message.contains("`_fivetran_deleted` is dropped"),
+        "{d:#?}"
+    );
+    let span = d.primary.span.expect("points at the source");
+    assert_eq!((span.start.line, span.start.col), (1, 43), "{d:#?}");
+}
+
+#[test]
+fn filtering_or_keeping_the_flag_is_fine() {
+    for sql in [
+        "select order_id, amount from raw_orders where not _fivetran_deleted",
+        "select order_id, amount from raw_orders where coalesce(_fivetran_deleted, false) = false",
+        // Kept for a later model to filter, as is or renamed.
+        "select * from raw_orders",
+        "select order_id, _fivetran_deleted as is_deleted from raw_orders",
+        "select order_id, coalesce(_fivetran_deleted, false) as is_deleted from raw_orders",
+        // Applied in a join condition, or decided on in an aggregate.
+        "select c.customer_id, o.amount from customers c
+           left join raw_orders o on c.customer_id = o.customer_id and not o._fivetran_deleted",
+        "select customer_id, sum(case when _fivetran_deleted then 0 else amount end) as live
+           from raw_orders group by customer_id",
+    ] {
+        let out = run(&SoftDeleteDropped, &tables(), sql);
+        assert!(out.is_empty(), "{sql}\n{out:#?}");
+    }
+}
+
+#[test]
+fn dropping_inside_a_join_or_aggregate_counts() {
+    for sql in [
+        "select c.customer_id, sum(o.amount) as total from customers c
+           left join raw_orders o on c.customer_id = o.customer_id group by c.customer_id",
+        "with live as (select order_id, amount from raw_orders)
+         select * from live",
+    ] {
+        let out = run(&SoftDeleteDropped, &tables(), sql);
+        assert_eq!(out.len(), 1, "{sql}\n{out:#?}");
+    }
+}
+
 #[test]
 fn codes_are_operator_layer() {
-    for c in [Code::G010, Code::G011] {
+    for c in [Code::G010, Code::G011, Code::G012, Code::G013, Code::G014] {
         assert_eq!(c.layer(), cardinal_diag::Layer::Operator);
     }
 }

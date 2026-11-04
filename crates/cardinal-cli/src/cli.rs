@@ -9,7 +9,7 @@ use std::process::ExitCode;
 #[command(
     name = "cardinal",
     version,
-    about = "Check that your dbt models count every row exactly once, before anything runs"
+    about = "Find where your dbt models can repeat, drop or miscount rows, and prove where they can't, from the compiled SQL alone"
 )]
 pub struct Cli {
     /// dbt project directory (default: walk up from the current directory)

@@ -526,6 +526,7 @@ mod tests {
                 })
                 .collect(),
             keys: all,
+            null_keys: vec![],
             fds: vec![],
             not_null: vec![],
             status: GrainStatus::Known,
@@ -539,6 +540,7 @@ mod tests {
             measures: vec![],
             units: vec![],
             aggregated: vec![],
+            deleted: vec![],
         }
     }
 

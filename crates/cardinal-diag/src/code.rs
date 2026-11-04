@@ -15,6 +15,9 @@ pub enum Code {
     G009,
     G010,
     G011,
+    G012,
+    G013,
+    G014,
     P001,
     P002,
     P003,
@@ -40,6 +43,9 @@ pub const ALL_CODES: &[Code] = &[
     Code::G009,
     Code::G010,
     Code::G011,
+    Code::G012,
+    Code::G013,
+    Code::G014,
     Code::P001,
     Code::P002,
     Code::P003,
@@ -61,12 +67,15 @@ impl Code {
             Code::G003 => "many-to-many join",
             Code::G004 => "key is unknown",
             Code::G005 => "suppression matches no finding",
-            Code::G006 => "incremental unique_key isn't unique",
+            Code::G006 => "unique_key isn't unique",
             Code::G007 => "window ordering can tie",
             Code::G008 => "adds up a number that can't be added",
             Code::G009 => "adds amounts in different units",
             Code::G010 => "set operation matches columns by position, not name",
             Code::G011 => "filter drops rows with nulls",
+            Code::G012 => "UNION merges rows that can repeat",
+            Code::G013 => "count(*) counts unmatched rows of an outer join",
+            Code::G014 => "deleted rows kept: soft-delete flag dropped without a filter",
             Code::P001 => "exactly_once contract isn't proven",
             Code::P002 => "proof relies on something no test checks",
             Code::P003 => "guarantee from main is lost",
@@ -92,6 +101,9 @@ impl Code {
             | Code::G008
             | Code::G010
             | Code::G011
+            | Code::G012
+            | Code::G013
+            | Code::G014
             | Code::P002
             | Code::D001
             | Code::D002 => Severity::Warning,
@@ -116,6 +128,9 @@ impl Code {
             | Code::G009
             | Code::G010
             | Code::G011
+            | Code::G012
+            | Code::G013
+            | Code::G014
             | Code::P001
             | Code::P002
             | Code::P003
@@ -145,7 +160,7 @@ impl FromStr for Code {
             .find(|c| c.to_string().eq_ignore_ascii_case(s.trim()))
             .copied()
             .ok_or_else(|| {
-                format!("unknown code `{s}` (expected G001 to G011, P001 to P003, D001, D002 or E001 to E006)")
+                format!("unknown code `{s}` (expected G001 to G014, P001 to P003, D001, D002 or E001 to E006)")
             })
     }
 }

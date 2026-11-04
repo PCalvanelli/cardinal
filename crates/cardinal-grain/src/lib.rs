@@ -11,8 +11,9 @@ pub use analyze::summed_col;
 pub use analyze::{AnalyzedModel, JoinRecord, JoinSide, UpstreamFacts, analyze, node_id};
 pub use evidence::{Evidence, EvidenceArena, EvidenceId};
 pub use facts::{
-    Cardinality, ColSet, Computed, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key, LossSite,
-    Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, Unit, UnitSite, UnknownReason,
+    Cardinality, ColSet, Computed, Deleted, DistinctSite, Fd, FlagDrop, GrainStatus, Ind, JoinSite,
+    Key, LossSite, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, SOFT_DELETE_FLAGS,
+    Unit, UnitSite, UnknownReason,
 };
 pub use summary::{
     DeclaredCheck, RelationSummary, SummaryColumn, SummaryInd, SummaryKey, SummaryMeasure,

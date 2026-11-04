@@ -391,17 +391,17 @@ expression: json_without_timing(&out)
                 "level": "warning"
               },
               "fullDescription": {
-                "text": "incremental unique_key isn't unique. Run `cardinal explain G006` for details."
+                "text": "unique_key isn't unique. Run `cardinal explain G006` for details."
               },
               "id": "G006",
-              "name": "incremental unique_key isn't unique",
+              "name": "unique_key isn't unique",
               "properties": {
                 "tags": [
                   "layer:operator"
                 ]
               },
               "shortDescription": {
-                "text": "incremental unique_key isn't unique"
+                "text": "unique_key isn't unique"
               }
             },
             {
@@ -492,6 +492,60 @@ expression: json_without_timing(&out)
               },
               "shortDescription": {
                 "text": "filter drops rows with nulls"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "UNION merges rows that can repeat. Run `cardinal explain G012` for details."
+              },
+              "id": "G012",
+              "name": "UNION merges rows that can repeat",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
+              "shortDescription": {
+                "text": "UNION merges rows that can repeat"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "count(*) counts unmatched rows of an outer join. Run `cardinal explain G013` for details."
+              },
+              "id": "G013",
+              "name": "count(*) counts unmatched rows of an outer join",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
+              "shortDescription": {
+                "text": "count(*) counts unmatched rows of an outer join"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "deleted rows kept: soft-delete flag dropped without a filter. Run `cardinal explain G014` for details."
+              },
+              "id": "G014",
+              "name": "deleted rows kept: soft-delete flag dropped without a filter",
+              "properties": {
+                "tags": [
+                  "layer:operator"
+                ]
+              },
+              "shortDescription": {
+                "text": "deleted rows kept: soft-delete flag dropped without a filter"
               }
             },
             {
