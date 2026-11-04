@@ -17,7 +17,7 @@
 //! G counts only plain column references. `group by date_trunc('month', day)` puts many
 //! days in one group, so it must not count as `group by day`.
 
-use crate::g001::check_site;
+use crate::operator::g001::check_site;
 use crate::sites::{Site, aggregate_sites, bare_group, unalias};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};

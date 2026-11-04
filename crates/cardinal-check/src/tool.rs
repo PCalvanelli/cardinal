@@ -1,4 +1,6 @@
-//! E001 to E005: tool errors. Each names the fix.
+//! E001 to E006: Cardinal couldn't analyze a model's SQL. Each names the fix. They
+//! belong to the layer that failed: code (E001 to E003), graph (E004: an unresolved
+//! relation), node (E006: an unresolved column) or operator (E005: unsupported SQL).
 
 use crate::Locator;
 use cardinal_dbt::Relation;
@@ -40,7 +42,7 @@ pub fn plan_failure(
                 "run: dbt compile, so the manifest includes every relation this model reads".into(),
             ),
             PlanFailureKind::UnresolvedColumn(name) => (
-                Code::E004,
+                Code::E006,
                 format!("unresolved column {name}"),
                 "not in any upstream relation's columns".into(),
                 "run: dbt docs generate, or document the source's columns in YAML".into(),

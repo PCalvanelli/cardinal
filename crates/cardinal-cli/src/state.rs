@@ -7,7 +7,7 @@ use crate::commands::check::closure;
 use crate::config::{Config, Severities};
 use crate::engine::{Engine, ProjectLocator, RunResult};
 use crate::pipeline::{self, Options};
-use cardinal_check::{Lost, Side, compare_guarantees, lost_guarantees};
+use cardinal_check::{Lost, SHAPES_FILE, Shapes, Side, compare_guarantees, lost_guarantees};
 use cardinal_dbt::{Kind, Project, RelationId, load_state};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::{Diagnostic, Severity};
@@ -83,6 +83,30 @@ pub fn state_for(args: &CheckArgs, root: &Path) -> Option<PathBuf> {
     state_dir(args.state.as_deref(), root)
 }
 
+/// The shapes file in the state directory, when it was written from exactly these
+/// artifacts by this version of Cardinal and covers every model to compare.
+fn saved_shapes(
+    dir: &Path,
+    base: &Project,
+    selected: &BTreeSet<RelationId>,
+) -> Result<Shapes, String> {
+    let path = dir.join(SHAPES_FILE);
+    if !path.is_file() {
+        return Err(format!("no {SHAPES_FILE}"));
+    }
+    let shapes = Shapes::load(&path)?;
+    if base.invocation_id.is_none() || shapes.manifest != base.invocation_id {
+        return Err(format!("{SHAPES_FILE} is from a different manifest.json"));
+    }
+    if let Some(id) = selected
+        .iter()
+        .find(|id| !shapes.reported_for.contains(*id) || shapes.get(id).is_none())
+    {
+        return Err(format!("{SHAPES_FILE} does not cover {id}"));
+    }
+    Ok(shapes)
+}
+
 /// Analyze the base artifacts in `dir` and compare the selected models with their base
 /// versions.
 pub fn compare(
@@ -107,19 +131,39 @@ pub fn compare(
         .filter(|id| base.get(id).is_some_and(|r| r.is_model()))
         .cloned()
         .collect();
-    let base_run =
-        Engine::for_state(&base, config, use_cache, head_run).run(&closure(&base, &base_selected));
-    let base_findings = pipeline::collect(
-        &base,
-        &base_run,
-        &base_selected,
-        &Options {
-            severities,
-            baseline: None,
-            state: None,
-            min_severity: Severity::Info,
-        },
-    );
+    // Main's shapes, from the file its own `cardinal check` wrote when it fits these
+    // artifacts, or else by analyzing them.
+    let (base_shapes, on_main) = match saved_shapes(&head.root.join(dir), &base, &base_selected) {
+        Ok(s) => {
+            tracing::debug!(
+                "--state: using {}",
+                head.root.join(dir).join(SHAPES_FILE).display()
+            );
+            let on_main = s.findings.clone();
+            (s, on_main)
+        }
+        Err(why) => {
+            tracing::debug!("--state: analyzing main's artifacts: {why}");
+            let base_run = Engine::for_state(&base, config, use_cache, head_run)
+                .run(&closure(&base, &base_selected));
+            let shapes = base_run.shapes(&base);
+            let base_findings = pipeline::collect(
+                &base,
+                &base_run,
+                &shapes,
+                &base_selected,
+                &Options {
+                    severities,
+                    baseline: None,
+                    state: None,
+                    min_severity: Severity::Info,
+                    layers: &BTreeSet::new(),
+                    no_sql: false,
+                },
+            );
+            (shapes, Baseline::from_findings(&base_findings.all))
+        }
+    };
 
     let mut lost: BTreeMap<RelationId, Vec<Lost>> = BTreeMap::new();
     let (mut gained, mut kept, mut skipped) = (0, 0, 0);
@@ -131,7 +175,7 @@ pub fn compare(
             skipped += 1;
             continue;
         }
-        let (Some(b), Some(h)) = (base_run.results.get(id), head_run.results.get(id)) else {
+        let (Some(b), Some(h)) = (base_shapes.get(id), head_run.results.get(id)) else {
             continue;
         };
         // A model that does not plan has an E-code instead.
@@ -158,7 +202,7 @@ pub fn compare(
     Ok(Comparison {
         dir: shown.display().to_string(),
         findings,
-        on_main: Baseline::from_findings(&base_findings.all),
+        on_main,
         lost: lost.values().map(Vec::len).sum(),
         gained,
         kept,

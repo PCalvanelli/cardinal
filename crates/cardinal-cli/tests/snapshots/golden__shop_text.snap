@@ -2,6 +2,22 @@
 source: crates/cardinal-cli/tests/golden.rs
 expression: out
 ---
+warning[G005]: suppression matches no finding
+ --> models/marts/customer_summary.sql:5:38
+  |
+5 |     sum(o.shipping_fee) as shipping  -- cardinal: allow(G001) reason: stale, nothing fans out here
+  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ allow(G001) no longer matches any finding
+  |
+  = help: remove the comment
+  = see: cardinal explain G005
+
+info[G004]: can't check 1 model: source shop.events has no known key
+ --> models/sources.yml
+  |
+  = note: affects order_events
+  = help: declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess
+  = see: cardinal explain G004
+
 warning[G003]: many-to-many join
  --> models/marts/customer_promos.sql:5:1
   |
@@ -13,15 +29,6 @@ warning[G003]: many-to-many join
   = note: every pair of matching rows becomes one output row
   = help: reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)
   = see: cardinal explain G003
-
-warning[G005]: suppression matches no finding
- --> models/marts/customer_summary.sql:5:38
-  |
-5 |     sum(o.shipping_fee) as shipping  -- cardinal: allow(G001) reason: stale, nothing fans out here
-  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ allow(G001) no longer matches any finding
-  |
-  = help: remove the comment
-  = see: cardinal explain G005
 
 warning[G008]: adds up a number that can't be added
  --> models/marts/customers_to_date.sql:3:5
@@ -77,13 +84,6 @@ warning[G008]: adds up a number that can't be added
   = help: count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)
   = see: cardinal explain G008
 
-info[G004]: can't check 1 model: source shop.events has no known key
- --> models/sources.yml
-  |
-  = note: affects order_events
-  = help: declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess
-  = see: cardinal explain G004
-
 Analyzed 15 models in <time>: 14 with a known key (93%).
-Findings: 1 error, 5 warnings, 1 info (G001 ×1, G002 ×1, G003 ×1, G004 ×1, G005 ×1, G008 ×2); 1 suppressed.
+Findings: 1 error, 5 warnings, 1 info (code: G005 ×1; node: G004 ×1; operator: G001 ×1, G002 ×1, G003 ×1, G008 ×2); 1 suppressed.
 Next: 1 source without a known key keeps 1 model from being checked: shop.events. Run cardinal guess so dbt can test likely keys, or declare it (see cardinal coverage).

@@ -37,4 +37,4 @@ error[P003]: orders_enriched may now repeat rows of stg_orders
 
 Analyzed 10 models in <time>: 7 with a known key (70%).
 Compared with main (state: state): 7 guarantees lost, 1 gained, 16 kept; 1 finding already on main, not shown.
-Findings: 2 errors, 1 warning (P003 ×3); 1 suppressed.
+Findings: 2 errors, 1 warning (operator: P003 ×3); 1 suppressed.

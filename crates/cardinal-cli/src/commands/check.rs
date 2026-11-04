@@ -4,10 +4,11 @@ use crate::config::Config;
 use crate::engine::{Engine, RunResult};
 use crate::pipeline::{self, Findings, Options};
 use crate::state::{self, Comparison};
+use cardinal_check::SHAPES_FILE;
 use cardinal_dbt::{Hypothesis, Project, RelationId, select};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::render::{self, Style};
-use cardinal_diag::{Code, Severity};
+use cardinal_diag::{ALL_LAYERS, Code, Layer, Severity};
 use cardinal_grain::UnknownReason;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -95,6 +96,24 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
             return EXIT_TOOL;
         }
     };
+    let layer_names = if args.layer.is_empty() {
+        &config.layers
+    } else {
+        &args.layer
+    };
+    let layers: BTreeSet<Layer> = match layer_names.iter().map(|s| s.parse()).collect() {
+        Ok(l) => l,
+        Err(e) => {
+            eprint_error(&e);
+            return EXIT_TOOL;
+        }
+    };
+    // Every layer selected is the same as none.
+    let layers = if ALL_LAYERS.iter().all(|l| layers.contains(l)) {
+        BTreeSet::new()
+    } else {
+        layers
+    };
     let selected = match selection(project, args) {
         Ok(s) => s,
         Err(e) => {
@@ -102,13 +121,27 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
             return EXIT_TOOL;
         }
     };
-    let engine = Engine::new(project, config, !args.no_cache);
-    let run = engine.run(&closure(project, &selected));
+    // Graph and node checks read only the manifest and catalog: with neither code nor
+    // operator selected, no SQL is analyzed, so this works on the output of dbt parse.
+    let no_sql = !layers.is_empty() && layers.iter().all(|l| !l.needs_sql());
+    let run = if no_sql {
+        RunResult::empty()
+    } else {
+        Engine::new(project, config, !args.no_cache).run(&closure(project, &selected))
+    };
+    let mut shapes = run.shapes(project);
     // A baseline records this branch's own findings; a comparison with main would add
     // P003 findings to it and hide findings main has, so --update-baseline skips it.
-    let state_dir = if args.update_baseline {
+    // P003 is an operator-layer check, so it also needs that layer.
+    let operator = layers.is_empty() || layers.contains(&Layer::Operator);
+    let state_dir = if args.update_baseline || !operator {
         if args.state.is_some() {
-            eprintln!("warning: --state is ignored with --update-baseline");
+            let why = if args.update_baseline {
+                "--update-baseline"
+            } else {
+                "--layer without operator"
+            };
+            eprintln!("warning: --state is ignored with {why}");
         }
         None
     } else {
@@ -159,8 +192,26 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
         baseline: baseline.as_ref(),
         state: comparison.as_ref(),
         min_severity,
+        layers: &layers,
+        no_sql,
     };
-    let findings = pipeline::collect(project, &run, &selected, &opts);
+    let findings = pipeline::collect(project, &run, &shapes, &selected, &opts);
+
+    // Shapes of a full analysis in every layer, for later --state runs to compare with.
+    if layers.is_empty() {
+        let own: Vec<_> = findings
+            .all
+            .iter()
+            .filter(|d| d.code != Code::P003)
+            .cloned()
+            .collect();
+        shapes.findings = Baseline::from_findings(&own);
+        shapes.reported_for = selected.clone();
+        let path = project.target_dir.join(SHAPES_FILE);
+        if let Err(e) = shapes.save(&path) {
+            eprintln!("warning: could not write {}: {e}", path.display());
+        }
+    }
 
     if args.update_baseline {
         let own: Vec<_> = findings
@@ -193,14 +244,27 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
             &selected,
             &findings,
             comparison.as_ref(),
+            &Scope {
+                layers: &layers,
+                no_sql,
+            },
             Style {
                 color: to_stdout && color(true),
             },
         ),
-        Format::Json => render::json(
-            &findings.reported,
-            summary_json(project, &run, &selected, &findings, comparison.as_ref()),
-        ),
+        Format::Json => {
+            let mut summary =
+                summary_json(project, &run, &selected, &findings, comparison.as_ref());
+            summary["layers"] = json!(
+                ALL_LAYERS
+                    .iter()
+                    .filter(|l| layers.is_empty() || layers.contains(l))
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+            );
+            summary["sql_analyzed"] = json!(!no_sql);
+            render::json(&findings.reported, summary)
+        }
         Format::Sarif => render::sarif(&findings.reported),
     };
     let write = match &args.output {
@@ -351,12 +415,19 @@ pub fn unlock_hint(project: &Project, findings: &Findings, see_coverage: bool) -
     })
 }
 
+/// What a run checked: the layers (empty = all), and whether it read any SQL.
+struct Scope<'a> {
+    layers: &'a BTreeSet<Layer>,
+    no_sql: bool,
+}
+
 fn text_report(
     project: &Project,
     run: &RunResult,
     selected: &BTreeSet<RelationId>,
     findings: &Findings,
     comparison: Option<&Comparison>,
+    scope: &Scope<'_>,
     st: Style,
 ) -> String {
     let files = source_files(project);
@@ -382,15 +453,23 @@ fn text_report(
     } else {
         String::new()
     };
-    out.push_str(&format!(
-        "Analyzed {} in {:.2}s{cached}: {} with a known key ({}%).\n",
-        plural(cov.models, "model", "models"),
-        run.elapsed.as_secs_f64(),
-        cov.known,
-        pct(cov.known, cov.models)
-    ));
+    if scope.no_sql {
+        out.push_str(&format!(
+            "Checked the declarations of {} against the manifest and catalog (no SQL read).\n",
+            plural(cov.models, "model", "models"),
+        ));
+    } else {
+        out.push_str(&format!(
+            "Analyzed {} in {:.2}s{cached}: {} with a known key ({}%).\n",
+            plural(cov.models, "model", "models"),
+            run.elapsed.as_secs_f64(),
+            cov.known,
+            pct(cov.known, cov.models)
+        ));
+    }
     let (proven, not) = contracts(project, run, selected);
-    if proven + not > 0 {
+    // Nothing is proven without reading the SQL, so don't count contracts then.
+    if proven + not > 0 && !scope.no_sql {
         out.push_str(&format!(
             "Contracts: {proven} of {} proven.\n",
             plural(
@@ -406,10 +485,22 @@ fn text_report(
     if let Some(g) = guesses_line(project) {
         out.push_str(&g);
     }
-    let by_code = pipeline::count_by_code(&findings.reported);
-    let codes: Vec<String> = by_code.iter().map(|(c, n)| format!("{c} ×{n}")).collect();
+    // "Findings: 1 error, 1 warning (node: G004 ×1; operator: G001 ×1)."
+    let groups: Vec<String> = pipeline::count_by_layer(&findings.reported)
+        .iter()
+        .map(|(layer, codes)| {
+            let codes: Vec<String> = codes.iter().map(|(c, n)| format!("{c} ×{n}")).collect();
+            format!("{layer}: {}", codes.join(", "))
+        })
+        .collect();
+    let only = if scope.layers.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = scope.layers.iter().map(|l| l.to_string()).collect();
+        format!(" in {} only", names.join(", "))
+    };
     let mut line = if findings.reported.is_empty() {
-        "No findings".to_string()
+        format!("No findings{only}")
     } else {
         let mut parts = vec![
             plural(errors, "error", "errors"),
@@ -418,7 +509,11 @@ fn text_report(
         if infos > 0 {
             parts.push(plural(infos, "info", "infos"));
         }
-        format!("Findings: {} ({})", parts.join(", "), codes.join(", "))
+        format!(
+            "Findings{only}: {} ({})",
+            parts.join(", "),
+            groups.join("; ")
+        )
     };
     let mut hidden = Vec::new();
     if findings.below_threshold > 0 {
@@ -513,6 +608,7 @@ fn summary_json(
         "contracts_proven": proven,
         "contracts_not_proven": not,
         "findings_by_code": pipeline::count_by_code(&findings.reported).into_iter().map(|(c, n)| (c.to_string(), n)).collect::<std::collections::BTreeMap<_, _>>(),
+        "findings_by_layer": ALL_LAYERS.iter().map(|l| (l.to_string(), findings.reported.iter().filter(|d| d.code.layer() == *l).count())).collect::<std::collections::BTreeMap<_, _>>(),
         "baselined": findings.baselined,
         "suppressed": findings.suppressed,
         "below_min_severity": findings.below_threshold,

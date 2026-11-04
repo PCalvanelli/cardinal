@@ -180,7 +180,7 @@ impl UpstreamFacts for Tables {
 }
 
 /// A bare model relation for tests.
-fn test_relation(id: &RelationId, name: &str) -> cardinal_dbt::Relation {
+pub fn test_relation(id: &RelationId, name: &str) -> cardinal_dbt::Relation {
     cardinal_dbt::Relation {
         id: id.clone(),
         kind: cardinal_dbt::Kind::Model {
@@ -206,6 +206,8 @@ fn test_relation(id: &RelationId, name: &str) -> cardinal_dbt::Relation {
         contract_enforced: false,
         tags: vec![],
         incremental: None,
+        decl_problems: vec![],
+        yaml_file: None,
     }
 }
 

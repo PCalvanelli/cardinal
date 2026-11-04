@@ -11,5 +11,5 @@ info[G004]: can't check 2 models: source app.events has no known key
 
 Analyzed 5 models in <time>: 3 with a known key (60%).
 Cardinal's guesses: 2 passed dbt's tests and are used; 1 failed and is not (see cardinal coverage).
-Findings: 0 errors, 0 warnings, 1 info (G004 ×1).
+Findings: 0 errors, 0 warnings, 1 info (node: G004 ×1).
 Next: 1 source without a known key keeps 2 models from being checked: app.events. Declare its key in YAML (see cardinal coverage).

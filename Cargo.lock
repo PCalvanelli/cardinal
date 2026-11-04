@@ -496,6 +496,7 @@ dependencies = [
  "cardinal-grain",
  "cardinal-sql",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -136,7 +136,7 @@ pub fn generate(dir: &Path, spec: SynthSpec) -> std::io::Result<PathBuf> {
         levels.push(level);
     }
     let manifest = json!({
-        "metadata": {"dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json", "adapter_type": "duckdb"},
+        "metadata": {"dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json", "adapter_type": "duckdb", "invocation_id": "synthetic"},
         "nodes": nodes, "sources": sources,
     });
     std::fs::write(

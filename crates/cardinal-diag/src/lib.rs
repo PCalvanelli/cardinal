@@ -6,7 +6,7 @@ pub mod render;
 pub mod sourcemap;
 pub mod suppress;
 
-pub use code::{Code, Severity};
+pub use code::{ALL_LAYERS, Code, Layer, Severity};
 
 use cardinal_sql::SqlSpan;
 use serde::{Deserialize, Serialize};

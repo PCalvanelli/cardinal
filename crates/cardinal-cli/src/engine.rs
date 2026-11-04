@@ -3,13 +3,13 @@
 
 use crate::config::Config;
 use cardinal_cache::{Cache, KeyBuilder};
-use cardinal_check::{CheckContext, Locator, model_checks, plan_failure};
+use cardinal_check::{CheckContext, Locator, Shape, Shapes, model_checks, plan_failure};
 use cardinal_dbt::{Kind, Project, Relation, RelationId};
 use cardinal_diag::sourcemap::SourceMap;
 use cardinal_diag::{Diagnostic, Label};
 use cardinal_grain::{
-    AnalyzedModel, Cardinality, GrainStatus, JoinSide, RelationSummary, UnknownReason,
-    UpstreamFacts, Verdict, analyze, summarize, summary_from_declared, verdict,
+    AnalyzedModel, Cardinality, JoinSide, RelationSummary, UnknownReason, UpstreamFacts, Verdict,
+    analyze, summarize, summary_from_declared, verdict,
 };
 use cardinal_sql::provider::{Functions, TableLookup};
 use cardinal_sql::sqlparser::dialect::Dialect;
@@ -382,10 +382,33 @@ fn build_id() -> String {
         .unwrap_or_default()
 }
 
-/// Statuses of every analyzed relation, for root-cause grouping.
-pub fn statuses(run: &RunResult) -> BTreeMap<RelationId, GrainStatus> {
-    run.results
-        .iter()
-        .map(|(k, v)| (k.clone(), v.summary.status.clone()))
-        .collect()
+impl RunResult {
+    /// No analysis: what graph and node checks read when no SQL is analyzed.
+    pub fn empty() -> Self {
+        RunResult {
+            results: BTreeMap::new(),
+            elapsed: Duration::ZERO,
+            cache_hits: 0,
+        }
+    }
+
+    /// The shape of every analyzed relation, for project-wide checks and the shapes file.
+    pub fn shapes(&self, project: &Project) -> Shapes {
+        let mut shapes = Shapes::new(&project.adapter, project.invocation_id.clone());
+        shapes.relations = self
+            .results
+            .iter()
+            .map(|(id, r)| {
+                (
+                    id.clone(),
+                    Shape {
+                        planned: r.planned,
+                        summary: r.summary.clone(),
+                        verdicts: r.verdicts.clone(),
+                    },
+                )
+            })
+            .collect();
+        shapes
+    }
 }

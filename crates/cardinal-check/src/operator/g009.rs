@@ -7,8 +7,8 @@
 //! `U ⊄ closure(G)` on I, so one group can hold rows in different units. A filter to one
 //! unit (`where currency = 'USD'`) puts it in closure(∅).
 
-use crate::g001::check_site;
-use crate::g008::Call;
+use crate::operator::g001::check_site;
+use crate::operator::g008::Call;
 use crate::sites::{Site, aggregate_sites, bare_group};
 use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity};

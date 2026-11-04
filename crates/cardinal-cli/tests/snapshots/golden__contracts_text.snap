@@ -2,6 +2,21 @@
 source: crates/cardinal-cli/tests/golden.rs
 expression: out
 ---
+error[D002]: exactly_once names `orders_archive`, which is not a model, seed, snapshot or source
+ --> models/marts/schema.yml
+  |
+  = in meta.cardinal.exactly_once
+  |
+  = help: use a model name, or source_name.table_name for a source
+  = see: cardinal explain D002
+
+info[G004]: can't check 1 model: source shop.payments has no known key
+ --> models/sources.yml
+  |
+  = note: affects order_payments
+  = help: declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess
+  = see: cardinal explain G004
+
 error[P001]: rows of stg_orders may be dropped
  --> models/marts/completed_orders.sql:3:1
   |
@@ -37,14 +52,6 @@ warning[P002]: exactly_once of shop.order_items rests on 4 unchecked assumptions
   = help: add the dbt tests that `cardinal assumptions --emit-tests` prints
   = see: cardinal explain P002
 
-error[P001]: exactly_once names `orders_archive`, which is not a model, seed, snapshot or source
- --> models/marts/order_payments.sql
-  |
-  = in meta.cardinal.exactly_once
-  |
-  = help: use a model name, or source_name.table_name for a source
-  = see: cardinal explain P001
-
 error[P001]: rows of stg_orders may be dropped or repeated
  --> models/marts/order_payments.sql:6:1
   |
@@ -56,14 +63,7 @@ error[P001]: rows of stg_orders may be dropped or repeated
   = help: use a left join, or declare the reference that guarantees a match with meta.cardinal.references
   = see: cardinal explain P001
 
-info[G004]: can't check 1 model: source shop.payments has no known key
- --> models/sources.yml
-  |
-  = note: affects order_payments
-  = help: declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess
-  = see: cardinal explain G004
-
 Analyzed 7 models in <time>: 6 with a known key (86%).
 Contracts: 4 of 7 exactly_once contracts proven.
-Findings: 3 errors, 2 warnings, 1 info (G004 ×1, P001 ×3, P002 ×2).
+Findings: 3 errors, 2 warnings, 1 info (graph: D002 ×1; node: G004 ×1; operator: P001 ×2, P002 ×2).
 Next: 1 source without a known key keeps 1 model from being checked: shop.payments. Run cardinal guess so dbt can test likely keys, or declare it (see cardinal coverage).

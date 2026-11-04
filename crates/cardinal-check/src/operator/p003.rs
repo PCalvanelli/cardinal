@@ -14,7 +14,7 @@
 //! downstream models it also affects in a note.
 
 use crate::Locator;
-use crate::p001::site_labels;
+use crate::operator::p001::site_labels;
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};
 use cardinal_grain::{Reason, RelationSummary, UnknownReason, Verdict};

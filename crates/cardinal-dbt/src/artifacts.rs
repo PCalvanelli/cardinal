@@ -26,6 +26,9 @@ pub struct ManifestMetadata {
     pub adapter_type: Option<String>,
     #[serde(default)]
     pub project_name: Option<String>,
+    /// dbt's id for the invocation that wrote the manifest.
+    #[serde(default)]
+    pub invocation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -102,6 +105,9 @@ pub struct ManifestNode {
     pub package_name: String,
     #[serde(default)]
     pub original_file_path: String,
+    /// The YAML file that documents it, as "package://path".
+    #[serde(default)]
+    pub patch_path: Option<String>,
     #[serde(default)]
     pub path: String,
     #[serde(default)]

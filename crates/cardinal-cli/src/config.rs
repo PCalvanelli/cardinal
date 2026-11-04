@@ -39,6 +39,9 @@ pub struct Config {
     pub baseline: BaselineConfig,
     #[serde(default)]
     pub guess: GuessConfig,
+    /// Layers `check` checks by default: code, graph, node, operator. Empty means all.
+    #[serde(default)]
+    pub layers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -143,6 +146,9 @@ pub fn template(dialect: &str) -> String {
 # Dialect detected from target/manifest.json (metadata.adapter_type).
 dialect = "{dialect}"
 
+# Layers `cardinal check` checks: "code", "graph", "node", "operator". Default: all.
+# layers = ["code", "graph", "node", "operator"]
+
 # Severity per code: "error", "warning", "info" or "off".
 [severity]
 # G003 = "error"
@@ -167,4 +173,16 @@ path = ".cardinal/baseline.json"
 # path = "tests/cardinal"
 "#
     )
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    #[test]
+    fn template_parses_with_layers_uncommented() {
+        let t = template("duckdb").replace("# layers = ", "layers = ");
+        let c: Config = toml::from_str(&t).unwrap();
+        assert_eq!(c.layers, vec!["code", "graph", "node", "operator"]);
+    }
 }

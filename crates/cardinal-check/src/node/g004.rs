@@ -1,6 +1,7 @@
 //! G004: a model's key is unknown. Reported once per root cause (for example one
 //! undeclared source), not once per affected model.
 
+use crate::{ProjectCheck, ProjectContext};
 use cardinal_dbt::{Kind, Project, RelationId};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
 use cardinal_grain::{GrainStatus, UnknownReason};
@@ -9,6 +10,47 @@ use std::collections::BTreeMap;
 pub struct UnknownGrainModel {
     pub id: RelationId,
     pub status: GrainStatus,
+}
+
+pub struct UnknownGrain;
+
+impl ProjectCheck for UnknownGrain {
+    fn codes(&self) -> &'static [Code] {
+        &[Code::G004]
+    }
+    fn needs_sql(&self) -> bool {
+        true
+    }
+    fn run(&self, cx: &ProjectContext<'_>, out: &mut Vec<Diagnostic>) {
+        for (root, reason, affected, d) in root_causes(cx) {
+            // A model that failed to plan already has its E-code; its own G004 adds
+            // nothing unless other models are blocked by it.
+            let only_self =
+                matches!(reason, UnknownReason::PlanError(_)) && affected == vec![root.clone()];
+            if !only_self {
+                out.push(d);
+            }
+        }
+    }
+}
+
+/// The root causes of unknown grain among the selected models, ranked by how many
+/// models each blocks.
+pub fn root_causes(
+    cx: &ProjectContext<'_>,
+) -> Vec<(RelationId, UnknownReason, Vec<RelationId>, Diagnostic)> {
+    let models: Vec<UnknownGrainModel> = cx
+        .selected
+        .iter()
+        .filter(|id| cx.project.get(id).is_some_and(|r| r.is_model()))
+        .filter_map(|id| {
+            cx.shapes.get(id).map(|s| UnknownGrainModel {
+                id: id.clone(),
+                status: s.summary.status.clone(),
+            })
+        })
+        .collect();
+    unknown_grain(cx.project, &models, &cx.shapes.statuses())
 }
 
 /// Group models with unknown grain by root cause. Returns one finding per cause, plus

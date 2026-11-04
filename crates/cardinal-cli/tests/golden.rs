@@ -301,7 +301,9 @@ fn contracts_proven_have_no_p001() {
         .filter(|w| w[0].starts_with("error[P001]"))
         .map(|w| w[1].trim_start_matches(" --> "))
         .collect();
-    assert_eq!(p001_files.len(), 3, "{out}");
+    // The third contract names a relation that doesn't exist: D002, not P001.
+    assert_eq!(p001_files.len(), 2, "{out}");
+    assert_eq!(out.matches("error[D002]").count(), 1, "{out}");
     for proven in [
         "stg_orders",
         "orders_enriched",
@@ -789,6 +791,343 @@ fn measure_declarations_invalidate_the_cache() {
     assert!(
         !out.contains("avg_order_value  average"),
         "a cached summary hid the new declaration:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---- Invariant layers ------------------------------------------------------------
+
+#[test]
+fn layer_operator_reports_only_operator_findings() {
+    let (out, code) = cardinal(
+        &fixture("shop"),
+        &["check", "--no-cache", "--layer", "operator"],
+    );
+    assert_eq!(code, 1, "G001 is an error:\n{out}");
+    for op in ["G001", "G002", "G003", "G008"] {
+        assert!(out.contains(&format!("[{op}]")), "{op}:\n{out}");
+    }
+    // G004 is node; G005 (a stale suppression comment) is code.
+    assert!(!out.contains("[G004]") && !out.contains("[G005]"), "{out}");
+    assert!(out.contains("Findings in operator only:"), "{out}");
+}
+
+#[test]
+fn stale_suppression_needs_its_codes_layer() {
+    // allow(G001) can only be judged stale when the operator layer is checked too.
+    let (out, _) = cardinal(
+        &fixture("shop"),
+        &["check", "--no-cache", "--layer", "code"],
+    );
+    assert!(!out.contains("[G005]"), "{out}");
+    assert!(!out.contains("[G001]") && !out.contains("[G003]"), "{out}");
+    let (out, _) = cardinal(
+        &fixture("shop"),
+        &["check", "--no-cache", "--layer", "code,operator"],
+    );
+    assert!(out.contains("warning[G005]"), "{out}");
+}
+
+#[test]
+fn a_failing_layer_hides_later_layers_of_that_model() {
+    // stg_customers's SQL no longer parses (code layer): its node and operator
+    // findings would rest on nothing, so only E002 is reported for it.
+    let dir = bad_declarations("blocked");
+    edit_manifest(&dir, |m| {
+        m["nodes"]["model.contracts.stg_customers"]["compiled_code"] = "select from from".into();
+    });
+    let (out, _) = cardinal(&dir, &["check", "--no-cache"]);
+    assert!(out.contains("error[E002]"), "{out}");
+    assert!(
+        !out.contains("stg_orders, which stg_customers doesn't read"),
+        "D002 is after the code layer:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn layer_list_and_json_summary() {
+    let (out, _) = cardinal(
+        &fixture("contracts"),
+        &[
+            "check",
+            "--no-cache",
+            "--layer",
+            "graph,node",
+            "--format",
+            "json",
+        ],
+    );
+    let v = json_without_timing(&out);
+    assert_eq!(
+        v["summary"]["layers"],
+        serde_json::json!(["graph", "node"]),
+        "{v}"
+    );
+    for f in v["findings"].as_array().unwrap() {
+        assert!(f["layer"] == "graph" || f["layer"] == "node", "{f}");
+    }
+    assert_eq!(v["summary"]["findings_by_layer"]["operator"], 0, "{v}");
+    assert_eq!(v["summary"]["sql_analyzed"], false, "{v}");
+}
+
+#[test]
+fn unknown_layer_exits_2() {
+    let (_, code) = cardinal(&fixture("shop"), &["check", "--layer", "dag,tables"]);
+    assert_eq!(code, 2);
+}
+
+// ---- Declarations (D001, D002) and --manifest-only -------------------------------
+
+fn edit_manifest(dir: &std::path::Path, f: impl FnOnce(&mut serde_json::Value)) {
+    let p = dir.join("target/manifest.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    f(&mut v);
+    std::fs::write(&p, serde_json::to_string(&v).unwrap()).unwrap();
+}
+
+/// The contracts fixture with one declaration of each kind gone wrong.
+fn bad_declarations(tag: &str) -> PathBuf {
+    let dir = fixture_copy("contracts", tag, &["target/cardinal_shapes.json"]);
+    edit_manifest(&dir, |m| {
+        let n = &mut m["nodes"]["model.contracts.daily_revenue"];
+        // The model outputs order_date and revenue.
+        n["meta"]["cardinal"]["grain"] = serde_json::json!(["day"]);
+        n["columns"]["revenue"] = serde_json::json!({
+            "name": "revenue",
+            "meta": {"cardinal": {"unit": "currency"}}
+        });
+        // stg_customers reads only shop.customers.
+        m["nodes"]["model.contracts.stg_customers"]["meta"] =
+            serde_json::json!({"cardinal": {"exactly_once": "stg_orders"}});
+        m["sources"]["source.contracts.shop.orders"]["columns"]["customer_id"]["meta"] =
+            serde_json::json!({"cardinal": {"references": "nowhere"}});
+    });
+    dir
+}
+
+fn finding_lines(out: &str, prefix: &str) -> Vec<String> {
+    let mut v: Vec<String> = out
+        .lines()
+        .filter(|l| l.contains(prefix))
+        .map(|l| l.to_string())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn declarations_that_dont_match() {
+    let dir = bad_declarations("decl");
+    let (out, code) = cardinal(&dir, &["check", "--no-cache"]);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(
+        finding_lines(&out, "[D00"),
+        vec![
+            "error[D002]: exactly_once names `orders_archive`, which is not a model, seed, snapshot or source",
+            "error[D002]: exactly_once names stg_orders, which stg_customers doesn't read",
+            "warning[D001]: meta.cardinal.unit on daily_revenue is ignored",
+            "warning[D002]: meta.cardinal.references on shop.orders is ignored",
+        ],
+        "{out}"
+    );
+    // The grain on a column the SQL doesn't output is G002's, which reads the SQL.
+    assert!(
+        out.contains("warning[G002]: declared key (day) names columns the model doesn't output"),
+        "{out}"
+    );
+    // The non-upstream contract is D002, not also P001.
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(
+        !lines
+            .windows(2)
+            .any(|w| w[0].starts_with("error[P001]") && w[1].contains("stg_customers")),
+        "{out}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn graph_and_node_check_declarations_without_sql() {
+    let dir = bad_declarations("no-sql");
+    // As dbt parse writes it: no compiled SQL.
+    edit_manifest(&dir, |m| {
+        for n in m["nodes"].as_object_mut().unwrap().values_mut() {
+            n.as_object_mut().unwrap().remove("compiled_code");
+        }
+    });
+    let (out, code) = cardinal(&dir, &["check", "--no-cache", "--layer", "graph,node"]);
+    assert_eq!(code, 1, "the D002 contracts are errors:\n{out}");
+    // Without SQL, D001 also checks the grain against the catalog's columns.
+    assert_eq!(
+        finding_lines(&out, "[D001]"),
+        vec![
+            "warning[D001]: meta.cardinal.grain on daily_revenue names day, which it doesn't have",
+            "warning[D001]: meta.cardinal.unit on daily_revenue is ignored",
+        ],
+        "{out}"
+    );
+    assert_eq!(finding_lines(&out, "[D002]").len(), 3, "{out}");
+    for absent in ["[E001]", "[P001]", "[P002]", "[G004]"] {
+        assert!(!out.contains(absent), "{absent}:\n{out}");
+    }
+    assert!(out.contains("(no SQL read)"), "{out}");
+    assert!(
+        !out.contains("Contracts:"),
+        "nothing is proven without SQL:\n{out}"
+    );
+    assert!(
+        !dir.join("target/cardinal_shapes.json").exists(),
+        "no shapes without analysis"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---- The shapes file -------------------------------------------------------------
+
+fn run_with_log(dir: &std::path::Path, args: &[&str]) -> (String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_cardinal"))
+        .args(args)
+        .arg("--project-dir")
+        .arg(dir)
+        .env("CARDINAL_ALLOW_STALE", "1")
+        .env("NO_COLOR", "1")
+        .env("CARDINAL_LOG", "cardinal_cli=debug")
+        .env_remove("DBT_STATE")
+        .output()
+        .unwrap();
+    (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn check_writes_shapes() {
+    let dir = fixture_copy("contracts", "shapes", &["target/cardinal_shapes.json"]);
+    let (out, _) = cardinal(&dir, &["check", "--no-cache"]);
+    let v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("target/cardinal_shapes.json")).expect(&out),
+    )
+    .unwrap();
+    assert_eq!(v["schema"], "cardinal.shapes/v1");
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("target/manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(v["manifest"], m["metadata"]["invocation_id"]);
+    let shape = &v["relations"]["model.contracts.stg_orders"];
+    assert_eq!(shape["planned"], true, "{shape}");
+    assert!(
+        !shape["summary"]["keys"].as_array().unwrap().is_empty(),
+        "{shape}"
+    );
+    // --layer runs see only part of the findings, so they don't write shapes.
+    std::fs::remove_file(dir.join("target/cardinal_shapes.json")).unwrap();
+    cardinal(&dir, &["check", "--no-cache", "--layer", "code"]);
+    assert!(!dir.join("target/cardinal_shapes.json").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn state_reads_mains_shapes() {
+    // Main's own `cardinal check`, run on main's artifacts, writes the shapes.
+    let main = fixture_copy(
+        "guarantees",
+        "shapes-main",
+        &["target/cardinal_shapes.json"],
+    );
+    for f in ["manifest.json", "catalog.json"] {
+        std::fs::copy(main.join("state").join(f), main.join("target").join(f)).unwrap();
+    }
+    cardinal(&main, &["check", "--no-cache"]);
+    let shapes = main.join("target/cardinal_shapes.json");
+    assert!(shapes.is_file());
+
+    let branch = fixture_copy(
+        "guarantees",
+        "shapes-branch",
+        &["target/cardinal_shapes.json"],
+    );
+    let args = ["check", "--no-cache", "--state", "state"];
+    let (analyzed, log) = run_with_log(&branch, &args);
+    assert!(
+        log.contains("analyzing main's artifacts: no cardinal_shapes.json"),
+        "{log}"
+    );
+
+    std::fs::copy(&shapes, branch.join("state/cardinal_shapes.json")).unwrap();
+    let (from_file, log) = run_with_log(&branch, &args);
+    assert!(log.contains("--state: using"), "{log}");
+    let strip = |s: &str| {
+        s.lines()
+            .filter(|l| !l.starts_with("Analyzed"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip(&from_file), strip(&analyzed));
+
+    // Shapes from another manifest are never used.
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&shapes).unwrap()).unwrap();
+    v["manifest"] = "another-run".into();
+    std::fs::write(branch.join("state/cardinal_shapes.json"), v.to_string()).unwrap();
+    let (again, log) = run_with_log(&branch, &args);
+    assert!(log.contains("from a different manifest.json"), "{log}");
+    assert_eq!(strip(&again), strip(&analyzed));
+    let _ = std::fs::remove_dir_all(main);
+    let _ = std::fs::remove_dir_all(branch);
+}
+
+// ---- Operator rules through the whole pipeline -----------------------------------
+
+fn set_sql(m: &mut serde_json::Value, model: &str, raw: &str, compiled: &str) {
+    let n = &mut m["nodes"][format!("model.contracts.{model}")];
+    n["raw_code"] = raw.into();
+    n["compiled_code"] = compiled.into();
+}
+
+#[test]
+fn set_op_and_null_filter_rules_end_to_end() {
+    let dir = fixture_copy("contracts", "operators", &["target/cardinal_shapes.json"]);
+    edit_manifest(&dir, |m| {
+        set_sql(
+            m,
+            "orders_enriched",
+            "select o.order_id, o.status, c.name as customer_name\nfrom {{ ref('stg_orders') }} o\nleft join {{ ref('stg_customers') }} c on o.customer_id = c.customer_id\nwhere c.name <> 'test'\n",
+            "select o.order_id, o.status, c.name as customer_name\nfrom \"warehouse\".\"main\".\"stg_orders\" o\nleft join \"warehouse\".\"main\".\"stg_customers\" c on o.customer_id = c.customer_id\nwhere c.name <> 'test'\n",
+        );
+        set_sql(
+            m,
+            "completed_orders",
+            "select order_id, customer_id from {{ ref('stg_orders') }}\nunion all\nselect customer_id, order_id from {{ ref('stg_orders') }}\n",
+            "select order_id, customer_id from \"warehouse\".\"main\".\"stg_orders\"\nunion all\nselect customer_id, order_id from \"warehouse\".\"main\".\"stg_orders\"\n",
+        );
+    });
+    let (out, code) = cardinal(&dir, &["check", "--no-cache", "--layer", "operator"]);
+    assert_eq!(code, 1, "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    let at = |prefix: &str| -> Vec<String> {
+        lines
+            .windows(2)
+            .filter(|w| w[0].starts_with(prefix))
+            .map(|w| w[1].trim_start_matches(" --> ").to_string())
+            .collect()
+    };
+    assert_eq!(
+        at(
+            "warning[G011]: WHERE on stg_customers's columns turns the left join into an inner join"
+        ),
+        vec!["models/marts/orders_enriched.sql:4:7"],
+        "{out}"
+    );
+    assert_eq!(
+        at("error[G010]"),
+        vec![
+            "models/marts/completed_orders.sql:3:8",
+            "models/marts/completed_orders.sql:3:21"
+        ],
+        "{out}"
     );
     let _ = std::fs::remove_dir_all(dir);
 }
