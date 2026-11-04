@@ -53,6 +53,28 @@ In your dbt project:
 
 ```sh
 dbt compile && dbt docs generate   # writes target/manifest.json and target/catalog.json
+cardinal init
+```
+
+`cardinal init` checks that the artifacts are there and current, then sets up Cardinal:
+
+```
+Setting up Cardinal in /home/me/shop
+  ✓ target/manifest.json: 214 models, dbt 1.9.4
+  ✓ compiled SQL for all 214 models
+  ✓ target/catalog.json
+  ✓ dialect: snowflake (from the manifest)
+  ✓ wrote cardinal.toml
+  ! wrote a stub for 2 functions Cardinal didn't know: parse_ip(), my_udf()
+      check each return type in cardinal.toml
+  ✓ recorded 1 finding in .cardinal/baseline.json
+      in CI, cardinal check --baseline .cardinal/baseline.json fails only on new ones
+  ✓ added .cardinal/cache/ to .gitignore
+```
+
+Commit cardinal.toml and the baseline. Then:
+
+```sh
 cardinal check
 ```
 

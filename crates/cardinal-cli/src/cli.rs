@@ -56,8 +56,17 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Write a starter cardinal.toml
-    Init,
+    /// Set Cardinal up in a dbt project: check its artifacts and write cardinal.toml
+    ///
+    /// Checks that the dbt artifacts Cardinal reads exist and are current, detects the
+    /// dialect, writes a stub for each warehouse function Cardinal doesn't know, records
+    /// today's findings in .cardinal/baseline.json for CI, and adds .cardinal/cache/ to
+    /// .gitignore. Safe to run again: it keeps an existing cardinal.toml and baseline.
+    Init {
+        /// Rewrite cardinal.toml and the baseline even if they exist
+        #[arg(long)]
+        force: bool,
+    },
     /// Run check again whenever target/manifest.json changes
     Watch(CheckArgs),
 }
@@ -140,7 +149,7 @@ pub fn main() -> ExitCode {
         Command::Assumptions { format, emit_tests } => {
             commands::assumptions::run(cli.project_dir, format, emit_tests)
         }
-        Command::Init => commands::init::run(cli.project_dir),
+        Command::Init { force } => commands::init::run(cli.project_dir, force),
         Command::Watch(args) => commands::watch::run(cli.project_dir, args),
     };
     ExitCode::from(code)

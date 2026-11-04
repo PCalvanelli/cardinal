@@ -338,7 +338,7 @@ pub fn contracts(
     (proven, not)
 }
 
-fn pct(a: usize, b: usize) -> usize {
+pub fn pct(a: usize, b: usize) -> usize {
     if b == 0 { 100 } else { (a * 100 + b / 2) / b }
 }
 

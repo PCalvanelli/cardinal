@@ -37,7 +37,7 @@ pub use operator::p003::{
     Bound, Guarantee, Lost, ModelChange, Side, compare as compare_guarantees, lost_guarantees,
 };
 pub use shapes::{SHAPES_FILE, SHAPES_SCHEMA, Shape, Shapes};
-pub use tool::plan_failure;
+pub use tool::{plan_failure, unknown_function};
 
 use cardinal_dbt::{Project, Relation, RelationId};
 use cardinal_diag::{Code, Diagnostic, Label};

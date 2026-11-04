@@ -7,6 +7,16 @@ use cardinal_dbt::Relation;
 use cardinal_diag::{Code, Diagnostic, Fix, normalize_text};
 use cardinal_sql::{PlanFailure, PlanFailureKind};
 
+const UNKNOWN_FUNCTION: &str = "unknown function ";
+
+/// The function an E003 finding names, for `cardinal init` to write a stub for.
+pub fn unknown_function(d: &Diagnostic) -> Option<&str> {
+    if d.code != Code::E003 {
+        return None;
+    }
+    d.message.strip_prefix(UNKNOWN_FUNCTION)?.strip_suffix("()")
+}
+
 /// E001 when `failure` is None (no compiled SQL), otherwise the code for the failure.
 pub fn plan_failure(
     rel: &Relation,
@@ -29,7 +39,7 @@ pub fn plan_failure(
             ),
             PlanFailureKind::UnresolvedFunction(name) => (
                 Code::E003,
-                format!("unknown function {name}()"),
+                format!("{UNKNOWN_FUNCTION}{name}()"),
                 format!("{name} is not a DataFusion built-in or a known stub"),
                 format!(
                     "add a stub to cardinal.toml:\n         [[stub]]\n         name = \"{name}\"\n         returns = \"varchar\"   # or the function's return type"

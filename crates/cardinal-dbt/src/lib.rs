@@ -4,6 +4,7 @@
 pub mod artifacts;
 pub mod assumption;
 pub mod guess;
+pub mod profile;
 pub mod project;
 pub mod select;
 
@@ -13,5 +14,5 @@ pub use project::{
     Column, DataTest, DeclOrigin, DeclProblem, DeclProblemKind, DeclaredKey, DeclaredMeasure,
     DeclaredReference, DeclaredUnit, ExactlyOnce, Incremental, Kind, LoadError, LoadWarning,
     MeasureDecl, NotNullOrigin, Project, Relation, RelationId, TestKind, find_project_root,
-    load_project, load_state,
+    find_projects_below, load_project, load_state, supported_adapters,
 };

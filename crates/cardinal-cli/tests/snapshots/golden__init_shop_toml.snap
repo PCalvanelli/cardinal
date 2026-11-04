@@ -1,0 +1,37 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: toml
+---
+# cardinal.toml
+# Detected from target/manifest.json (metadata.adapter_type).
+dialect = "duckdb"
+
+# Layers `cardinal check` checks: "code", "graph", "node", "operator". Default: all.
+# layers = ["code", "graph", "node", "operator"]
+
+# Severity per code: "error", "warning", "info" or "off".
+[severity]
+# G003 = "error"
+
+# Severity for files under a path; the longest matching path wins.
+# [[override]]
+# path = "models/legacy/"
+# G001 = "warning"
+
+# Warehouse functions DataFusion does not know. Stubs are never run; only the
+# return type matters.
+# [[stub]]
+# name = "convert_timezone"
+# returns = "timestamp"      # a warehouse type, or "arg0" for the first argument's type
+# deterministic = true
+# kind = "aggregate"         # for aggregates; add idempotent = true if duplicates cannot change it
+
+# Today's findings, recorded by `cardinal init` or `cardinal check --update-baseline`.
+# In CI, `cardinal check --baseline .cardinal/baseline.json` fails only on new findings.
+# Uncomment to apply the baseline to every run, which hides the findings it holds.
+# [baseline]
+# path = ".cardinal/baseline.json"
+
+# Where `cardinal guess` writes the dbt tests that check its guesses.
+# [guess]
+# path = "tests/cardinal"

@@ -1194,3 +1194,158 @@ fn explain_operator_catalog_codes() {
         assert!(out.starts_with(&format!("# {code}:")), "{out}");
     }
 }
+
+/// `cardinal init` in `dir`, isolated from the environment's dbt settings. Returns
+/// stdout with the project path as <root>, stderr, and the exit code.
+fn init(dir: &PathBuf, args: &[&str]) -> (String, String, i32) {
+    let out = Command::new(env!("CARGO_BIN_EXE_cardinal"))
+        .arg("init")
+        .args(args)
+        .arg("--project-dir")
+        .arg(dir)
+        .env("CARDINAL_ALLOW_STALE", "1")
+        .env("NO_COLOR", "1")
+        .env("HOME", dir)
+        .env_remove("DBT_PROFILES_DIR")
+        .env_remove("DBT_PROJECT_DIR")
+        .env_remove("DBT_TARGET_PATH")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout)
+        .unwrap()
+        .replace(&dir.display().to_string(), "<root>");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    (stdout, stderr, out.status.code().unwrap_or(-1))
+}
+
+#[test]
+fn init_sets_up_a_project() {
+    let dir = fixture_copy(
+        "shop",
+        "init",
+        &["target/cardinal_shapes.json", ".cardinal"],
+    );
+    let (out, err, code) = init(&dir, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    insta::assert_snapshot!("init_shop", out);
+    let toml = std::fs::read_to_string(dir.join("cardinal.toml")).unwrap();
+    insta::assert_snapshot!("init_shop_toml", toml);
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join(".cardinal/baseline.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(recorded["entries"].as_array().unwrap().len(), 7);
+
+    // A baselined run reports nothing new.
+    let baseline = dir.join(".cardinal/baseline.json");
+    let (out, code) = cardinal(&dir, &["check", "--baseline", baseline.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("No findings"), "{out}");
+    // Without --baseline, a local check still shows every finding.
+    let (out, _) = cardinal(&dir, &["check"]);
+    assert!(out.contains("error[G001]"), "{out}");
+
+    // Run again: keeps both files, and adds nothing more to .gitignore.
+    std::fs::write(dir.join("cardinal.toml"), "dialect = \"duckdb\"\n").unwrap();
+    let (out, _, code) = init(&dir, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("kept cardinal.toml"), "{out}");
+    assert!(out.contains("kept .cardinal/baseline.json"), "{out}");
+    let toml_now = std::fs::read_to_string(dir.join("cardinal.toml")).unwrap();
+    assert_eq!(toml_now, "dialect = \"duckdb\"\n");
+    let gitignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert_eq!(
+        gitignore.matches(".cardinal/cache/").count(),
+        1,
+        "{gitignore}"
+    );
+
+    // --force rewrites cardinal.toml.
+    let (out, _, code) = init(&dir, &["--force"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("replaced the old one"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("cardinal.toml")).unwrap(),
+        toml
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_without_artifacts_reads_the_profile() {
+    let dir = fixture_copy("shop", "init-bare", &["target", ".cardinal"]);
+    let (out, err, code) = init(&dir, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("✗ target/manifest.json not found"), "{out}");
+    assert!(
+        out.contains("dialect: duckdb (from profile in profiles.yml)"),
+        "{out}"
+    );
+    assert!(out.contains("then cardinal init again"), "{out}");
+    let toml = std::fs::read_to_string(dir.join("cardinal.toml")).unwrap();
+    assert!(toml.contains("# Detected from your dbt profile in profiles.yml."));
+    assert!(!dir.join(".cardinal/baseline.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_stubs_unknown_functions() {
+    let dir = fixture_copy(
+        "shop",
+        "init-udf",
+        &["target/cardinal_shapes.json", ".cardinal"],
+    );
+    let path = dir.join("target/manifest.json");
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let sql = m["nodes"]["model.shop.stg_orders"]["compiled_code"]
+        .as_str()
+        .unwrap()
+        // Two in one model: planning stops at the first, so init must go round again.
+        .replacen(
+            "status,",
+            "my_udf(status) as status, other_udf(order_date, 1) as od,",
+            1,
+        );
+    m["nodes"]["model.shop.stg_orders"]["compiled_code"] = sql.into();
+    std::fs::write(&path, m.to_string()).unwrap();
+
+    let (out, err, code) = init(&dir, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.contains("wrote a stub for 2 functions Cardinal didn't know: my_udf(), other_udf()"),
+        "{out}"
+    );
+    let toml = std::fs::read_to_string(dir.join("cardinal.toml")).unwrap();
+    assert!(toml.contains("name = \"my_udf\""), "{toml}");
+    assert!(toml.contains("name = \"other_udf\""), "{toml}");
+    let (out, _) = cardinal(&dir, &["check", "--no-cache"]);
+    assert!(!out.contains("E003"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn no_project_lists_the_projects_below() {
+    // A repository holding the project one level down.
+    let parent = std::env::temp_dir().join(format!("cardinal-monorepo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parent);
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::create_dir_all(parent.join("shop")).unwrap();
+    std::fs::copy(
+        fixture("shop").join("dbt_project.yml"),
+        parent.join("shop/dbt_project.yml"),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cardinal"))
+        .arg("check")
+        .current_dir(&parent)
+        .env("NO_COLOR", "1")
+        .env_remove("DBT_PROJECT_DIR")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("found dbt projects in shop/"), "{err}");
+    assert!(err.contains("--project-dir shop"), "{err}");
+    let _ = std::fs::remove_dir_all(&parent);
+}
