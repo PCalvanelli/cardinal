@@ -42,18 +42,38 @@ pub fn eprint_warning(msg: &str) {
     }
 }
 
+/// The dbt project root: walk up from --project-dir, else $DBT_PROJECT_DIR, else the
+/// current directory. When none is found, name the projects below, as in a monorepo.
 pub fn root(dir: Option<PathBuf>) -> Result<PathBuf, u8> {
-    let start = match dir {
+    let start = match dir.or_else(|| {
+        std::env::var_os("DBT_PROJECT_DIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+    }) {
         Some(d) => d,
         None => std::env::current_dir().map_err(|_| EXIT_TOOL)?,
     };
     find_project_root(&start).ok_or_else(|| {
-        eprint_error(
-            &cardinal_dbt::LoadError::NoProject {
-                from: start.clone(),
-            }
-            .to_string(),
-        );
+        let mut msg = cardinal_dbt::LoadError::NoProject {
+            from: start.clone(),
+        }
+        .to_string();
+        let below = cardinal_dbt::find_projects_below(&start, 3);
+        if let Some(first) = below.first() {
+            let rel = |p: &PathBuf| p.strip_prefix(&start).unwrap_or(p).display().to_string();
+            let names: Vec<String> = below.iter().take(5).map(|p| format!("{}/", rel(p))).collect();
+            let more = if below.len() > 5 {
+                format!(" and {} more", below.len() - 5)
+            } else {
+                String::new()
+            };
+            msg.push_str(&format!(
+                "\n  found dbt projects in {}{more}\n  pass one with --project-dir, e.g. --project-dir {}",
+                names.join(", "),
+                rel(first)
+            ));
+        }
+        eprint_error(&msg);
         EXIT_TOOL
     })
 }

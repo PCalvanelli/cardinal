@@ -92,3 +92,24 @@ columns:
 Every proof starts from the keys, non-null columns and references above.
 `cardinal assumptions` lists each one and whether a dbt test checks it;
 `cardinal assumptions --emit-tests` prints the missing tests as YAML.
+
+## cardinal.toml
+
+`cardinal init` writes it. Run it in your dbt project after `dbt compile && dbt docs
+generate`:
+
+- **dialect**: read from the manifest, or from your dbt profile when there is no
+  manifest yet.
+- **[[stub]]**: one per warehouse function your models call that Cardinal doesn't know,
+  so those models can be checked. Stubs are never run; only the return type matters.
+  Each starts as `returns = "arg0"` (the first argument's type), so check each one.
+- **The baseline**: today's findings go in `.cardinal/baseline.json`. In CI,
+  `cardinal check --baseline .cardinal/baseline.json` fails only on new findings, while
+  a plain `cardinal check` still shows them all.
+
+Running `cardinal init` again keeps cardinal.toml and the baseline, and prints stubs for
+any new unknown functions to paste in. `cardinal init --force` rewrites both.
+
+Cardinal finds the project by walking up from the current directory, or from
+`--project-dir` or `$DBT_PROJECT_DIR`. It reads `target-path` from dbt_project.yml, or
+`$DBT_TARGET_PATH`.

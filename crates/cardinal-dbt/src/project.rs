@@ -490,9 +490,49 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Directories at most `depth` levels below `start` that hold a dbt_project.yml, for
+/// pointing at the project when Cardinal runs from a monorepo's root. Skips dbt's
+/// installed packages, build output and hidden directories.
+pub fn find_projects_below(start: &Path, depth: usize) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![(start.to_path_buf(), 0)];
+    while let Some((dir, d)) = stack.pop() {
+        if d > 0 && dir.join("dbt_project.yml").is_file() {
+            found.push(dir);
+            continue;
+        }
+        if d == depth {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let skip = name.starts_with('.')
+                || matches!(
+                    name.as_ref(),
+                    "target" | "dbt_packages" | "dbt_modules" | "node_modules" | "logs"
+                );
+            if !skip && e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push((e.path(), d + 1));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The `profile:` dbt_project.yml names.
+pub(crate) fn profile_name(root: &Path) -> Option<String> {
+    Some(read_project_yml(root).profile).filter(|p| !p.is_empty())
+}
+
 /// Values from dbt_project.yml that Cardinal needs, read without a YAML parser.
 struct ProjectYml {
     name: String,
+    profile: String,
     target_path: String,
     model_paths: Vec<String>,
     test_paths: Vec<String>,
@@ -502,6 +542,7 @@ fn read_project_yml(root: &Path) -> ProjectYml {
     let text = std::fs::read_to_string(root.join("dbt_project.yml")).unwrap_or_default();
     let mut yml = ProjectYml {
         name: String::new(),
+        profile: String::new(),
         target_path: "target".into(),
         model_paths: vec!["models".into()],
         test_paths: vec!["tests".into()],
@@ -530,6 +571,7 @@ fn read_project_yml(root: &Path) -> ProjectYml {
         };
         match key.trim_end() {
             "name" => yml.name = unquote(v),
+            "profile" => yml.profile = unquote(v),
             "target-path" => yml.target_path = unquote(v),
             key @ ("model-paths" | "test-paths") if v.trim().is_empty() => {
                 block = Some((key, Vec::new()));
@@ -543,6 +585,10 @@ fn read_project_yml(root: &Path) -> ProjectYml {
     }
     if let Some((key, items)) = block {
         yml.set_paths(key, items);
+    }
+    // dbt reads DBT_TARGET_PATH before target-path.
+    if let Some(t) = std::env::var_os("DBT_TARGET_PATH").filter(|t| !t.is_empty()) {
+        yml.target_path = t.to_string_lossy().into_owned();
     }
     yml
 }
@@ -564,7 +610,7 @@ impl ProjectYml {
 
 /// `line` without its YAML comment: a `#` at the start or after whitespace, outside
 /// quotes. dbt's older starter project has `target-path: "target"  # directory ...`.
-fn strip_yaml_comment(line: &str) -> &str {
+pub(crate) fn strip_yaml_comment(line: &str) -> &str {
     let mut quote = None;
     let mut after_space = true;
     for (i, c) in line.char_indices() {
@@ -1546,7 +1592,7 @@ fn build(
     if !cycle.is_empty() {
         warnings.push(LoadWarning::CycleIgnored(cycle));
     }
-    let known = cardinal_sql_adapters();
+    let known = supported_adapters();
     if !known.contains(&adapter.to_ascii_lowercase().as_str()) {
         warnings.push(LoadWarning::UnknownAdapter(adapter.clone()));
     }
@@ -1622,7 +1668,8 @@ fn attach_guess_test(
     })
 }
 
-fn cardinal_sql_adapters() -> &'static [&'static str] {
+/// Adapters with a matching SQL dialect; any other uses the generic one.
+pub fn supported_adapters() -> &'static [&'static str] {
     &[
         "snowflake",
         "bigquery",

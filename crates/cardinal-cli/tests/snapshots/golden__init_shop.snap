@@ -1,0 +1,17 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+Setting up Cardinal in <root>
+  ✓ target/manifest.json: 15 models, dbt 1.7.3
+  ✓ compiled SQL for all 15 models
+  ✓ target/catalog.json
+  ✓ dialect: duckdb (from the manifest)
+  ✓ wrote cardinal.toml
+  ✓ recorded 7 findings in .cardinal/baseline.json
+      in CI, cardinal check --baseline .cardinal/baseline.json fails only on new ones
+  ✓ added .cardinal/cache/ to .gitignore
+
+Analyzed 15 models: 14 with a known key (93%).
+Findings: 1 error, 5 warnings (G001 ×1, G002 ×1, G003 ×1, G005 ×1, G008 ×2). Run cardinal check to see them.
+Next: 1 source without a known key keeps 1 model from being checked: shop.events. Run cardinal guess so dbt can test likely keys, or declare it (see cardinal coverage).
