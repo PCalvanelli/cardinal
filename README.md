@@ -168,6 +168,11 @@ the one before, like the stages of a compiler:
 When a model fails one layer, Cardinal reports that and nothing from the later layers
 for it: those findings would rest on what failed.
 
+Outer joins are tracked precisely. After `customers left join orders`, `order_id` is
+still unique among the rows where it isn't null (the same thing a dbt `unique` test
+checks), so each order is still counted at most once, and a later join on `order_id` is
+still many-to-one.
+
 The operator layer is a catalog of what each operator can get wrong:
 
 | Operator | What goes wrong | Code | Default |
@@ -175,11 +180,14 @@ The operator layer is a catalog of what each operator can get wrong:
 | join | Fans out, and a sum or count then adds a repeated value more than once | G001 | error |
 | join | Many-to-many: neither side is unique on the join columns | G003 | warning |
 | filter | `NOT IN` over values that can be null keeps no rows; `WHERE` on a left join's null-filled side turns it into an inner join | G011 | warning |
+| filter | A soft-delete flag (`_fivetran_deleted`, `_sdc_deleted_at`, `_ab_cdc_deleted_at`) is dropped with nothing on the way filtering on it, so deleted rows count | G014 | warning |
 | aggregate | Adds up a number that can't be added: overlapping distinct counts, averages, ratios, percentiles, balances across dates | G008 | warning |
 | aggregate | Adds amounts in different units, such as `amount` across currencies (needs `unit`) | G009 | error |
+| aggregate | `count(*)` over a left join counts a row with no match as 1, not 0 | G013 | warning |
 | window, dedup | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is random | G007 | warning |
 | set operation | `UNION` matches columns by position: a later branch's columns are swapped or named differently | G010 | warning, error when swapped |
-| the model | A declared key, or an incremental `unique_key`, that the SQL doesn't guarantee | G002, G006 | warning |
+| set operation | `UNION` (not `UNION ALL`) merges equal rows, and a branch can repeat a row with an amount in it, so real rows are lost | G012 | warning |
+| the model | A declared key, or an incremental model's or snapshot's `unique_key`, that the SQL doesn't guarantee | G002, G006 | warning |
 | the model | An `exactly_once` contract that isn't proven, or rests on something no test checks | P001, P002 | error, warning |
 | the model | A guarantee main has that the branch loses (with `--state`) | P003 | error |
 

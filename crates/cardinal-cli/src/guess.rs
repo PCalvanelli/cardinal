@@ -875,6 +875,7 @@ mod tests {
             contract_enforced: false,
             tags: vec![],
             incremental: None,
+            snapshot: None,
             decl_problems: vec![],
             yaml_file: None,
         }

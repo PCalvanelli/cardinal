@@ -36,7 +36,7 @@ pub fn selection(project: &Project, args: &CheckArgs) -> Result<BTreeSet<Relatio
     let mut selectors = args.select.clone();
     selectors.extend(args.positional.iter().cloned());
     let mut sel = if selectors.is_empty() && args.changed_since.is_none() {
-        project.models().map(|r| r.id.clone()).collect()
+        project.checked().map(|r| r.id.clone()).collect()
     } else {
         select::select(project, &selectors)?
     };

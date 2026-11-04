@@ -3,10 +3,10 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId, NO_EVIDENCE};
 use crate::facts::{
-    ColSet, Fd, GrainStatus, Ind, JoinSite, Key, Measure, MeasureKind, MeasureSite, RelationFacts,
-    RowLoss, Unit, UnitSite, UnknownReason,
+    ColSet, Deleted, Fd, GrainStatus, Ind, JoinSite, Key, Measure, MeasureKind, MeasureSite,
+    RelationFacts, RowLoss, SOFT_DELETE_FLAGS, Unit, UnitSite, UnknownReason,
 };
-use cardinal_dbt::{Assumption, DeclOrigin, DeclaredKey, MeasureDecl, Relation, RelationId};
+use cardinal_dbt::{Assumption, DeclOrigin, DeclaredKey, Kind, MeasureDecl, Relation, RelationId};
 use cardinal_sql::datafusion_common::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use cardinal_sql::types::warehouse_type;
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,10 @@ pub struct RelationSummary {
     pub display: String,
     pub columns: Vec<SummaryColumn>,
     pub keys: Vec<SummaryKey>,
+    /// Keys that hold among rows where their columns are non-null (see
+    /// `RelationFacts::null_keys`).
+    #[serde(default)]
+    pub null_keys: Vec<SummaryKey>,
     pub fds: Vec<SummaryFd>,
     pub not_null: Vec<usize>,
     pub status: GrainStatus,
@@ -103,6 +107,9 @@ pub struct RelationSummary {
     /// Columns holding the result of a summing or counting aggregate.
     #[serde(default)]
     pub aggregated: Vec<usize>,
+    /// Relations whose soft-deleted rows are still here (see `Deleted`).
+    #[serde(default)]
+    pub deleted: Vec<Deleted>,
 }
 
 impl RelationSummary {
@@ -224,6 +231,20 @@ impl RelationSummary {
                 }
             })
             .collect();
+        let null_keys = self
+            .null_keys
+            .iter()
+            .filter(|k| k.cols.iter().all(|c| *c < self.columns.len()))
+            .map(|k| Key {
+                cols: k.cols.iter().copied().collect(),
+                why: arena.push(Evidence::Upstream {
+                    relation: self.relation.clone(),
+                    display: self.display.clone(),
+                    summary: k.why.clone(),
+                    assumptions: k.assumptions.clone(),
+                }),
+            })
+            .collect();
         let fds = self
             .fds
             .iter()
@@ -256,6 +277,7 @@ impl RelationSummary {
         RelationFacts {
             width,
             keys,
+            null_keys,
             fds,
             not_null: self.not_null.iter().copied().collect(),
             status: self.status.clone(),
@@ -297,6 +319,15 @@ impl RelationSummary {
                 .iter()
                 .copied()
                 .filter(|c| *c < width)
+                .collect(),
+            deleted: self
+                .deleted
+                .iter()
+                .map(|d| Deleted {
+                    col: d.col.filter(|c| *c < width),
+                    via: self.relation.clone(),
+                    ..d.clone()
+                })
                 .collect(),
         }
     }
@@ -409,6 +440,23 @@ pub fn summary_from_declared(rel: &Relation, unknown: UnknownReason) -> Relation
         }
     }
     let within = declared_references(rel, &columns, &[]);
+    // A source synced with soft deletes holds deleted rows until something filters them.
+    let deleted = if rel.kind == Kind::Source {
+        columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| SOFT_DELETE_FLAGS.contains(&c.name.to_ascii_lowercase().as_str()))
+            .map(|(i, c)| Deleted {
+                relation: rel.id.clone(),
+                flag: c.name.to_ascii_lowercase(),
+                col: Some(i),
+                dropped: None,
+                via: rel.id.clone(),
+            })
+            .collect()
+    } else {
+        vec![]
+    };
     let status = if keys.is_empty() {
         GrainStatus::Unknown(unknown)
     } else {
@@ -424,6 +472,7 @@ pub fn summary_from_declared(rel: &Relation, unknown: UnknownReason) -> Relation
         columns_known: !columns.is_empty(),
         columns,
         keys,
+        null_keys: vec![],
         fds: vec![],
         not_null,
         status,
@@ -435,6 +484,7 @@ pub fn summary_from_declared(rel: &Relation, unknown: UnknownReason) -> Relation
         measures,
         units,
         aggregated: vec![],
+        deleted,
     }
 }
 
@@ -540,13 +590,17 @@ pub fn summarize(
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let proven = facts.is_superkey(&cols);
+        let strict = facts.is_superkey(&cols);
+        // dbt's `unique` test skips nulls, so a key among non-null values is what it checks.
+        let proven = strict
+            || (matches!(d.origin, DeclOrigin::UniqueTest(_))
+                && facts.is_null_exempt_superkey(&cols));
         checks.push(DeclaredCheck {
             key: d.clone(),
             missing_columns: vec![],
             proven,
         });
-        if !proven {
+        if !strict {
             let v: Vec<usize> = cols.into_iter().collect();
             if !keys.iter().any(|k| k.cols == v) {
                 keys.push(SummaryKey {
@@ -625,6 +679,16 @@ pub fn summarize(
         columns_known: true,
         columns,
         keys,
+        null_keys: facts
+            .null_keys
+            .iter()
+            .map(|k| SummaryKey {
+                cols: k.cols.iter().copied().collect(),
+                why: arena.explain(k.why),
+                declared: None,
+                assumptions: assume(k.why),
+            })
+            .collect(),
         fds: facts
             .fds
             .iter()
@@ -654,6 +718,7 @@ pub fn summarize(
         measures,
         units,
         aggregated: facts.aggregated.iter().copied().collect(),
+        deleted: facts.deleted.clone(),
     };
     (summary, checks)
 }

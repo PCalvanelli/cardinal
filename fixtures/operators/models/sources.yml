@@ -1,0 +1,37 @@
+version: 2
+sources:
+  - name: shop
+    schema: shop
+    tables:
+      - name: customers
+        columns:
+          - name: customer_id
+            tests: [unique, not_null]
+      - name: addresses
+        columns:
+          - name: address_id
+            tests: [unique, not_null]
+          - name: customer_id
+            tests: [not_null]
+      - name: orders
+        description: Fivetran-synced, with soft deletes
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+          - name: customer_id
+            tests:
+              - not_null
+              - relationships:
+                  to: source('shop', 'customers')
+                  field: customer_id
+            meta:
+              cardinal:
+                references: shop.customers
+      - name: payments
+        columns:
+          - name: payment_id
+            tests: [unique, not_null]
+      - name: refunds
+        columns:
+          - name: refund_id
+            tests: [unique, not_null]

@@ -1,0 +1,6 @@
+version: 2
+models:
+  - name: customer_orders
+    meta:
+      cardinal:
+        exactly_once: [stg_orders]

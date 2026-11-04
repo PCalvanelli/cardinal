@@ -5,7 +5,7 @@
 //! - `graph`: every ref() and declared relation resolves (E004, D002).
 //! - `node`: each model's declared shape: columns, types, grain (E006, D001, G004).
 //! - `operator`: each join, filter, aggregate, window and set operation, checked against
-//!   the keys of what it reads (G001 to G003, G006 to G011, P001 to P003, E005).
+//!   the keys of what it reads (G001 to G003, G006 to G014, P001 to P003, E005).
 //!
 //! Checks that need a model's plan implement [`Check`] and run during analysis. Checks
 //! over the finished shapes implement [`ProjectCheck`] and run after it.
@@ -29,6 +29,9 @@ pub use operator::g008::NonAdditiveSum;
 pub use operator::g009::MixedUnits;
 pub use operator::g010::SetOpByPosition;
 pub use operator::g011::FilterDropsNulls;
+pub use operator::g012::UnionMergesRows;
+pub use operator::g013::CountOuterJoin;
+pub use operator::g014::SoftDeleteDropped;
 pub use operator::p001::{ExactlyOnceContracts, contract_findings};
 pub use operator::p003::{
     Bound, Guarantee, Lost, ModelChange, Side, compare as compare_guarantees, lost_guarantees,
@@ -93,6 +96,9 @@ pub fn model_checks() -> Vec<Box<dyn Check>> {
         Box::new(MixedUnits),
         Box::new(SetOpByPosition),
         Box::new(FilterDropsNulls),
+        Box::new(UnionMergesRows),
+        Box::new(CountOuterJoin),
+        Box::new(SoftDeleteDropped),
     ]
 }
 
@@ -133,7 +139,31 @@ pub(crate) fn decl_label(rel: &Relation, message: String) -> Label {
 
 /// Changes whenever the set of checks or their output changes, so cached results from
 /// an older check set are not reused.
-pub const CHECKS_FINGERPRINT: &str = "G001-G011+P003";
+pub const CHECKS_FINGERPRINT: &str = "G001-G014+P003";
+
+/// Byte offsets of `word` in `sql` as a whole word, ignoring case, outside `--` comments.
+pub(crate) fn word_offsets(sql: &str, word: &str) -> Vec<usize> {
+    let lower = sql.to_ascii_lowercase();
+    let word = word.to_ascii_lowercase();
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find(&word) {
+        let at = from + i;
+        from = at + word.len();
+        if lower[..at].chars().next_back().is_some_and(ident)
+            || lower[from..].chars().next().is_some_and(ident)
+        {
+            continue;
+        }
+        let line_start = lower[..at].rfind('\n').map_or(0, |n| n + 1);
+        if lower[line_start..at].contains("--") {
+            continue;
+        }
+        out.push(at);
+    }
+    out
+}
 
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))

@@ -208,6 +208,7 @@ impl<'a> Engine<'a> {
             .add_json(&rel.not_null)
             .add_json(&rel.columns)
             .add_json(&rel.incremental)
+            .add_json(&rel.snapshot)
             .add_json(&rel.references)
             .add_json(&rel.exactly_once)
             .add_json(&rel.measures)
@@ -232,10 +233,17 @@ impl<'a> Engine<'a> {
             from_cache: false,
             cache_key: String::new(),
         };
+        // A snapshot's table is its history, described by its declared key; its SQL is
+        // still checked, since every run merges what the SQL returns on unique_key.
+        let snapshot = rel.kind == Kind::Snapshot;
         match rel.kind {
-            Kind::Source | Kind::Seed | Kind::Snapshot => {
+            Kind::Source | Kind::Seed => {
                 return unplanned(UnknownReason::SourceWithoutKey(rel.id.clone()), vec![]);
             }
+            Kind::Snapshot if rel.compiled_sql.is_none() => {
+                return unplanned(UnknownReason::SourceWithoutKey(rel.id.clone()), vec![]);
+            }
+            Kind::Snapshot => {}
             Kind::PythonModel => {
                 return unplanned(UnknownReason::PythonModel(rel.id.clone()), vec![]);
             }
@@ -274,6 +282,10 @@ impl<'a> Engine<'a> {
             tables: &lookup,
         };
         let result = match plan_sql(sql, self.dialect.as_ref(), &ctx) {
+            Err(f) if snapshot => {
+                tracing::debug!(snapshot = %rel.id, error = %f.message, "plan failed");
+                unplanned(UnknownReason::SourceWithoutKey(rel.id.clone()), vec![])
+            }
             Err(f) => {
                 tracing::debug!(model = %rel.id, error = %f.message, "plan failed");
                 unplanned(
@@ -290,9 +302,18 @@ impl<'a> Engine<'a> {
                     &lookup,
                 );
                 let schema = model.plan.schema().as_arrow().clone();
-                let (mut summary, declared) = summarize(rel, &schema, model.output(), &model.arena);
-                summary.losses = model.losses.clone();
-                let verdicts = verdicts(rel, &model, done);
+                let (summary, declared, verdicts) = if snapshot {
+                    (
+                        summary_from_declared(rel, UnknownReason::SourceWithoutKey(rel.id.clone())),
+                        vec![],
+                        vec![],
+                    )
+                } else {
+                    let (mut summary, declared) =
+                        summarize(rel, &schema, model.output(), &model.arena);
+                    summary.losses = model.losses.clone();
+                    (summary, declared, verdicts(rel, &model, done))
+                };
                 let cx = CheckContext {
                     relation: rel,
                     locator: &locator,
@@ -319,7 +340,7 @@ impl<'a> Engine<'a> {
                     diagnostics,
                     joins,
                     verdicts,
-                    planned: true,
+                    planned: !snapshot,
                     from_cache: false,
                     cache_key: String::new(),
                 }

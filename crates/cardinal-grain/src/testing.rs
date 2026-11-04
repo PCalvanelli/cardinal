@@ -61,6 +61,7 @@ impl Tables {
                 repeats: vec![None; columns.len()],
                 columns,
                 keys,
+                null_keys: vec![],
                 fds: vec![],
                 not_null: vec![],
                 status,
@@ -73,6 +74,7 @@ impl Tables {
                 measures: vec![],
                 units: vec![],
                 aggregated: vec![],
+                deleted: vec![],
             },
         );
         self.by_name.insert(name.to_string(), id);
@@ -152,6 +154,29 @@ impl Tables {
         s.units.append(&mut decl.units);
     }
 
+    /// Set a column's Arrow type (default Int64), e.g. "Decimal128(10, 2)".
+    pub fn set_type(&mut self, name: &str, col: &str, data_type: &str) {
+        let id = self.by_name[name].clone();
+        let s = self.summaries.get_mut(&id).expect("table");
+        let i = s.col(col).expect("column");
+        s.columns[i].data_type = data_type.into();
+    }
+
+    /// Mark a table as synced with soft deletes, flagged in column `flag`, the way a
+    /// source with that column is.
+    pub fn soft_delete(&mut self, name: &str, flag: &str) {
+        let id = self.by_name[name].clone();
+        let s = self.summaries.get_mut(&id).expect("table");
+        let col = s.col(flag).expect("column");
+        s.deleted.push(crate::facts::Deleted {
+            relation: id.clone(),
+            flag: flag.into(),
+            col: Some(col),
+            dropped: None,
+            via: id,
+        });
+    }
+
     pub fn id(&self, name: &str) -> RelationId {
         self.by_name[name].clone()
     }
@@ -206,6 +231,7 @@ pub fn test_relation(id: &RelationId, name: &str) -> cardinal_dbt::Relation {
         contract_enforced: false,
         tags: vec![],
         incremental: None,
+        snapshot: None,
         decl_problems: vec![],
         yaml_file: None,
     }
@@ -218,6 +244,11 @@ pub fn functions() -> &'static Functions {
 
 /// Plan and analyze `sql` against `tables`.
 pub fn analyze_sql(tables: &Tables, sql: &str) -> AnalyzedModel {
+    analyze_model(tables, "m", sql)
+}
+
+/// Analyze `sql` as model `name` (`model.test.<name>`).
+pub fn analyze_model(tables: &Tables, name: &str, sql: &str) -> AnalyzedModel {
     let (d, _) = cardinal_sql::dialect::dialect_for_adapter("duckdb");
     let ctx = CardinalContext {
         functions: functions(),
@@ -226,8 +257,8 @@ pub fn analyze_sql(tables: &Tables, sql: &str) -> AnalyzedModel {
     let plan =
         plan_sql(sql, d.as_ref(), &ctx).unwrap_or_else(|e| panic!("plan failed: {e:?}\n{sql}"));
     analyze(
-        RelationId("model.test.m".into()),
-        "m".into(),
+        RelationId(format!("model.test.{name}")),
+        name.into(),
         sql.into(),
         plan,
         tables,
@@ -299,10 +330,17 @@ impl GrainCase {
         self
     }
 
+    /// Mark `table` as synced with soft deletes, flagged in boolean column `flag`.
+    pub fn soft_delete(mut self, table: &str, flag: &str) -> Self {
+        self.tables.set_type(table, flag, "Boolean");
+        self.tables.soft_delete(table, flag);
+        self
+    }
+
     /// Analyze `sql` as an upstream model named `name`, and make its summary readable
     /// by later SQL, the way the engine passes facts between models.
     pub fn model(mut self, name: &str, sql: &str) -> Self {
-        let m = analyze_sql(&self.tables, sql);
+        let m = analyze_model(&self.tables, name, sql);
         let id = RelationId(format!("model.test.{name}"));
         let mut rel = test_relation(&id, name);
         rel.compiled_sql = Some(sql.into());
@@ -375,6 +413,35 @@ impl GrainCase {
             got,
             want,
             "keys for:\n{}\n{}",
+            self.sql,
+            m.plan.display_indent()
+        );
+        self
+    }
+
+    /// The output's null-exempt keys (see `RelationFacts::null_keys`).
+    pub fn expect_null_keys(self, expected: &[&[&str]]) -> Self {
+        let m = self.run();
+        let mut got: Vec<Vec<String>> = m
+            .output()
+            .null_keys
+            .iter()
+            .map(|k| Self::names(&m, &k.cols))
+            .collect();
+        got.sort();
+        let mut want: Vec<Vec<String>> = expected
+            .iter()
+            .map(|k| {
+                let mut v: Vec<String> = k.iter().map(|s| s.to_string()).collect();
+                v.sort();
+                v
+            })
+            .collect();
+        want.sort();
+        assert_eq!(
+            got,
+            want,
+            "null-exempt keys for:\n{}\n{}",
             self.sql,
             m.plan.display_indent()
         );

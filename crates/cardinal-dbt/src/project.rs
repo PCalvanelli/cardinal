@@ -241,6 +241,8 @@ pub struct Relation {
     pub tags: Vec<String>,
     /// Set for models materialized as incremental.
     pub incremental: Option<Incremental>,
+    /// Set for snapshots: `unique_key` and the snapshot `strategy`.
+    pub snapshot: Option<Incremental>,
     /// meta.cardinal declarations that were ignored, and why (D001, D002).
     pub decl_problems: Vec<DeclProblem>,
     /// The YAML file that holds its declarations, relative to the project root, when
@@ -420,6 +422,14 @@ impl Project {
         self.relations.values().filter(|r| r.is_model())
     }
 
+    /// What `check` reports on by default: models, and snapshots with SQL (each run
+    /// merges what that SQL returns).
+    pub fn checked(&self) -> impl Iterator<Item = &Relation> {
+        self.relations
+            .values()
+            .filter(|r| r.is_model() || (r.kind == Kind::Snapshot && r.compiled_sql.is_some()))
+    }
+
     /// All transitive downstream relations of `id`.
     pub fn descendants(&self, id: &RelationId) -> BTreeSet<RelationId> {
         let mut out = BTreeSet::new();
@@ -459,7 +469,7 @@ impl Project {
         self.relations
             .get(&RelationId(query.to_string()))
             .or_else(|| {
-                self.models().find(|r| {
+                self.checked().find(|r| {
                     r.display == q
                         || r.file.trim_end_matches(".sql") == q
                         || r.file.trim_end_matches(".sql").ends_with(&format!("/{q}"))
@@ -1343,6 +1353,7 @@ fn build(
                 contract_enforced: false,
                 tags: vec![],
                 incremental: None,
+                snapshot: None,
                 decl_problems,
                 yaml_file: Some(s.original_file_path.clone()),
             },
@@ -1422,6 +1433,10 @@ fn build(
         let incremental =
             matches!(&kind, Kind::Model { materialized } if materialized == "incremental")
                 .then(|| incremental_config(&n.config));
+        let snapshot = (kind == Kind::Snapshot).then(|| Incremental {
+            strategy: n.config.strategy.clone(),
+            ..incremental_config(&n.config)
+        });
         let compiled_path = Some(
             target_rel
                 .join("compiled")
@@ -1468,6 +1483,7 @@ fn build(
                 contract_enforced,
                 tags: n.tags.clone(),
                 incremental,
+                snapshot,
                 decl_problems,
                 yaml_file: n
                     .patch_path
