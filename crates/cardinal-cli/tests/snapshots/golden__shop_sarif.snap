@@ -29,7 +29,7 @@ expression: json_without_timing(&out)
             }
           ],
           "message": {
-            "text": "many-to-many join: neither stg_orders (customer_id) nor shop.promos (customer_id) is unique\nnote: stg_orders has grain (order_id)\nnote: shop.promos has grain (customer_id, promo_code)\nnote: every pair of matching rows becomes one output row\nhelp: reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)"
+            "text": "many-to-many join: neither stg_orders (customer_id) nor shop.promos (customer_id) is unique\nnote: stg_orders has one row per (order_id)\nnote: shop.promos has one row per (customer_id, promo_code)\nnote: every pair of matching rows becomes one output row\nhelp: reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)"
           },
           "partialFingerprints": {
             "cardinalFingerprint/v1": "G003:model.shop.customer_promos:join \"warehouse\".\"shop\".\"promos\" p on o.customer_id = p.customer_id"
@@ -84,7 +84,7 @@ expression: json_without_timing(&out)
           "locations": [
             {
               "message": {
-                "text": "adds up counts of distinct customer_id across order_date"
+                "text": "adds up distinct counts of customer_id across order_date"
               },
               "physicalLocation": {
                 "artifactLocation": {
@@ -101,7 +101,7 @@ expression: json_without_timing(&out)
             }
           ],
           "message": {
-            "text": "distinct count is summed: adds up counts of distinct customer_id across order_date\nnote: a customer_id that appears with more than one order_date is counted once for each\nhelp: count each customer_id once, on its first order_date, and sum those instead"
+            "text": "adds up a number that can't be added: adds up distinct counts of customer_id across order_date\nnote: a customer_id that appears with more than one order_date is counted once for each\nhelp: count each customer_id once, on its first order_date, and sum those instead"
           },
           "partialFingerprints": {
             "cardinalFingerprint/v1": "G008:model.shop.customers_to_date:sum(active_customers)"
@@ -142,7 +142,7 @@ expression: json_without_timing(&out)
           "locations": [
             {
               "message": {
-                "text": "shipping_fee is determined by (order_id)"
+                "text": "shipping_fee has one value per (order_id)"
               },
               "physicalLocation": {
                 "artifactLocation": {
@@ -159,16 +159,16 @@ expression: json_without_timing(&out)
             }
           ],
           "message": {
-            "text": "aggregation fans out: shipping_fee is determined by (order_id)\nnote: order_lines has grain (order_id, line_id), proven: one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain\nhelp: sum shipping_fee per (order_id) before the join, or read it from a relation at that grain"
+            "text": "a join repeats values that are then added up: shipping_fee has one value per (order_id)\nnote: order_lines has one row per (order_id, line_id): one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)\nhelp: sum shipping_fee per (order_id) before the join, or read it from a table with one row per (order_id)"
           },
           "partialFingerprints": {
             "cardinalFingerprint/v1": "G001:model.shop.daily_revenue:sum(shipping_fee)"
           },
           "properties": {
             "evidence": [
-              "shipping_fee is determined by (order_id)",
-              "(order_id) plus the GROUP BY columns is not a key of the aggregate input",
-              "one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain"
+              "shipping_fee has one value per (order_id)",
+              "(order_id) plus the GROUP BY columns don't identify one input row",
+              "one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)"
             ],
             "model": "model.shop.daily_revenue"
           },
@@ -200,7 +200,7 @@ expression: json_without_timing(&out)
           "locations": [
             {
               "message": {
-                "text": "the SQL proves grain (order_id)"
+                "text": "the SQL guarantees one row per (order_id)"
               },
               "physicalLocation": {
                 "artifactLocation": {
@@ -211,14 +211,14 @@ expression: json_without_timing(&out)
             }
           ],
           "message": {
-            "text": "declared key (customer_id) is not proven by the SQL: the SQL proves grain (order_id)\nnote: test unique_latest_order_customer_id remains the only guarantee\nhelp: declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup"
+            "text": "declared key (customer_id) isn't guaranteed by the SQL: the SQL guarantees one row per (order_id)\nnote: only test unique_latest_order_customer_id checks it\nhelp: declare the keys of the tables it reads (meta.cardinal.grain), or make the SQL return one row per key, e.g. with GROUP BY or a row_number() dedup"
           },
           "partialFingerprints": {
             "cardinalFingerprint/v1": "G002:model.shop.latest_order:(customer_id)"
           },
           "properties": {
             "evidence": [
-              "key of shop.orders from test source_unique_shop_orders_order_id"
+              "key of shop.orders (test source_unique_shop_orders_order_id)"
             ],
             "model": "model.shop.latest_order"
           },
@@ -231,7 +231,7 @@ expression: json_without_timing(&out)
           "locations": [
             {
               "message": {
-                "text": "adds up counts of distinct customer_id across order_date"
+                "text": "adds up distinct counts of customer_id across order_date"
               },
               "physicalLocation": {
                 "artifactLocation": {
@@ -248,7 +248,7 @@ expression: json_without_timing(&out)
             }
           ],
           "message": {
-            "text": "distinct count is summed: adds up counts of distinct customer_id across order_date\nnote: a customer_id that appears with more than one order_date is counted once for each\nhelp: count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)"
+            "text": "adds up a number that can't be added: adds up distinct counts of customer_id across order_date\nnote: a customer_id that appears with more than one order_date is counted once for each\nhelp: count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)"
           },
           "partialFingerprints": {
             "cardinalFingerprint/v1": "G008:model.shop.monthly_active_customers:sum(active_customers)"
@@ -295,12 +295,12 @@ expression: json_without_timing(&out)
                 "level": "error"
               },
               "fullDescription": {
-                "text": "aggregation fans out. Run `cardinal explain G001` for details."
+                "text": "a join repeats values that are then added up. Run `cardinal explain G001` for details."
               },
               "id": "G001",
-              "name": "aggregation fans out",
+              "name": "a join repeats values that are then added up",
               "shortDescription": {
-                "text": "aggregation fans out"
+                "text": "a join repeats values that are then added up"
               }
             },
             {
@@ -308,12 +308,12 @@ expression: json_without_timing(&out)
                 "level": "warning"
               },
               "fullDescription": {
-                "text": "declared key is not proven. Run `cardinal explain G002` for details."
+                "text": "declared key isn't guaranteed by the SQL. Run `cardinal explain G002` for details."
               },
               "id": "G002",
-              "name": "declared key is not proven",
+              "name": "declared key isn't guaranteed by the SQL",
               "shortDescription": {
-                "text": "declared key is not proven"
+                "text": "declared key isn't guaranteed by the SQL"
               }
             },
             {
@@ -334,12 +334,12 @@ expression: json_without_timing(&out)
                 "level": "note"
               },
               "fullDescription": {
-                "text": "grain is unknown. Run `cardinal explain G004` for details."
+                "text": "key is unknown. Run `cardinal explain G004` for details."
               },
               "id": "G004",
-              "name": "grain is unknown",
+              "name": "key is unknown",
               "shortDescription": {
-                "text": "grain is unknown"
+                "text": "key is unknown"
               }
             },
             {
@@ -360,12 +360,12 @@ expression: json_without_timing(&out)
                 "level": "warning"
               },
               "fullDescription": {
-                "text": "incremental unique_key is not a key. Run `cardinal explain G006` for details."
+                "text": "incremental unique_key isn't unique. Run `cardinal explain G006` for details."
               },
               "id": "G006",
-              "name": "incremental unique_key is not a key",
+              "name": "incremental unique_key isn't unique",
               "shortDescription": {
-                "text": "incremental unique_key is not a key"
+                "text": "incremental unique_key isn't unique"
               }
             },
             {
@@ -373,12 +373,12 @@ expression: json_without_timing(&out)
                 "level": "warning"
               },
               "fullDescription": {
-                "text": "window order has ties. Run `cardinal explain G007` for details."
+                "text": "window ordering can tie. Run `cardinal explain G007` for details."
               },
               "id": "G007",
-              "name": "window order has ties",
+              "name": "window ordering can tie",
               "shortDescription": {
-                "text": "window order has ties"
+                "text": "window ordering can tie"
               }
             },
             {
@@ -386,12 +386,12 @@ expression: json_without_timing(&out)
                 "level": "warning"
               },
               "fullDescription": {
-                "text": "distinct count is summed. Run `cardinal explain G008` for details."
+                "text": "adds up a number that can't be added. Run `cardinal explain G008` for details."
               },
               "id": "G008",
-              "name": "distinct count is summed",
+              "name": "adds up a number that can't be added",
               "shortDescription": {
-                "text": "distinct count is summed"
+                "text": "adds up a number that can't be added"
               }
             },
             {
@@ -399,12 +399,25 @@ expression: json_without_timing(&out)
                 "level": "error"
               },
               "fullDescription": {
-                "text": "exactly-once contract is not proven. Run `cardinal explain P001` for details."
+                "text": "adds amounts in different units. Run `cardinal explain G009` for details."
+              },
+              "id": "G009",
+              "name": "adds amounts in different units",
+              "shortDescription": {
+                "text": "adds amounts in different units"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "exactly_once contract isn't proven. Run `cardinal explain P001` for details."
               },
               "id": "P001",
-              "name": "exactly-once contract is not proven",
+              "name": "exactly_once contract isn't proven",
               "shortDescription": {
-                "text": "exactly-once contract is not proven"
+                "text": "exactly_once contract isn't proven"
               }
             },
             {
@@ -412,12 +425,25 @@ expression: json_without_timing(&out)
                 "level": "warning"
               },
               "fullDescription": {
-                "text": "proof rests on unchecked assumptions. Run `cardinal explain P002` for details."
+                "text": "proof relies on something no test checks. Run `cardinal explain P002` for details."
               },
               "id": "P002",
-              "name": "proof rests on unchecked assumptions",
+              "name": "proof relies on something no test checks",
               "shortDescription": {
-                "text": "proof rests on unchecked assumptions"
+                "text": "proof relies on something no test checks"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "guarantee from main is lost. Run `cardinal explain P003` for details."
+              },
+              "id": "P003",
+              "name": "guarantee from main is lost",
+              "shortDescription": {
+                "text": "guarantee from main is lost"
               }
             },
             {
@@ -438,12 +464,12 @@ expression: json_without_timing(&out)
                 "level": "error"
               },
               "fullDescription": {
-                "text": "SQL does not parse. Run `cardinal explain E002` for details."
+                "text": "SQL doesn't parse. Run `cardinal explain E002` for details."
               },
               "id": "E002",
-              "name": "SQL does not parse",
+              "name": "SQL doesn't parse",
               "shortDescription": {
-                "text": "SQL does not parse"
+                "text": "SQL doesn't parse"
               }
             },
             {

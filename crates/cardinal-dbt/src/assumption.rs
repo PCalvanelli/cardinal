@@ -7,6 +7,7 @@
 //! proof is only as good as its assumptions, so every proof lists them, and this module
 //! says which ones a dbt test or the warehouse checks.
 
+use crate::guess::GuessNote;
 use crate::project::{DeclOrigin, Kind, NotNullOrigin, Project, Relation, RelationId, TestKind};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -97,6 +98,14 @@ impl fmt::Display for CheckedBy {
     }
 }
 
+/// Why a check doesn't count: "test X only warns, so it doesn't fail the build".
+pub fn weak_check(c: &CheckedBy) -> String {
+    match c {
+        CheckedBy::WarnTest(t) => format!("test {t} only warns, so it doesn't fail the build"),
+        other => format!("{other} doesn't fail the build"),
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     /// Where the assumption is declared, e.g. "meta.cardinal.grain".
@@ -108,6 +117,10 @@ pub struct Status {
     /// `where` filter): fix these rather than adding another.
     #[serde(default)]
     pub weak_tests: Vec<String>,
+    /// Set when the fact is a guess by `cardinal guess` that a dbt test passed:
+    /// "guessed by Cardinal; dbt test X passed on 2026-11-04". Never a declaration.
+    #[serde(default)]
+    pub guessed: Option<GuessNote>,
 }
 
 impl Status {
@@ -116,6 +129,25 @@ impl Status {
         self.checked_by
             .iter()
             .any(|c| !matches!(c, CheckedBy::WarnTest(_)))
+    }
+
+    /// A guess dbt checked once, whose test is no longer in the project: weaker than
+    /// checked, so still unchecked.
+    pub fn checked_once(&self) -> bool {
+        self.guessed.is_some() && !self.is_checked()
+    }
+
+    /// Where the fact comes from: "declared by meta.cardinal.grain", "guessed by
+    /// Cardinal; dbt test X passed on 2026-11-04", or both.
+    pub fn origin(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.declared_by.is_empty() {
+            parts.push(format!("declared by {}", self.declared_by.join(" and ")));
+        }
+        if let Some(g) = &self.guessed {
+            parts.push(g.describe());
+        }
+        parts.join("; ")
     }
 }
 
@@ -139,6 +171,10 @@ impl Project {
                     let mut c = d.cols.clone();
                     c.sort();
                     if c == want {
+                        if let DeclOrigin::Guess(n) = &d.origin {
+                            st.guessed = Some(n.clone());
+                            continue;
+                        }
                         st.declared_by.push(d.origin.describe());
                         if d.origin == DeclOrigin::ContractPrimaryKey {
                             self.contract_check(rel, "primary_key", ENFORCES_PRIMARY_KEY, &mut st);
@@ -157,6 +193,10 @@ impl Project {
             }
             Assumption::NotNull { column, .. } => {
                 for o in rel.not_null.get(column).into_iter().flatten() {
+                    if let NotNullOrigin::Guess(n) = o {
+                        st.guessed = Some(n.clone());
+                        continue;
+                    }
                     st.declared_by.push(o.describe());
                     if matches!(
                         o,
@@ -175,12 +215,15 @@ impl Project {
             Assumption::References {
                 cols, to, to_cols, ..
             } => {
-                if rel
+                for r in rel
                     .references
                     .iter()
-                    .any(|r| &r.cols == cols && &r.to == to && &r.to_cols == to_cols)
+                    .filter(|r| &r.cols == cols && &r.to == to && &r.to_cols == to_cols)
                 {
-                    st.declared_by.push("meta.cardinal.references".into());
+                    match &r.guess {
+                        Some(n) => st.guessed = Some(n.clone()),
+                        None => st.declared_by.push("meta.cardinal.references".into()),
+                    }
                 }
                 for t in &rel.tests {
                     if let TestKind::Relationships {

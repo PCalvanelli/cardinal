@@ -35,16 +35,19 @@ impl Check for UnprovenDeclaredKey {
             let key = tuple(&d.key.cols);
             let (message, label) = if d.missing_columns.is_empty() {
                 (
-                    format!("declared key {key} is not proven by the SQL"),
+                    format!("declared key {key} isn't guaranteed by the SQL"),
                     if inferred.is_empty() {
-                        "no key can be proven for this model".to_string()
+                        "the SQL guarantees no key for this model".to_string()
                     } else {
-                        format!("the SQL proves grain {}", inferred.join(" and "))
+                        format!(
+                            "the SQL guarantees one row per {}",
+                            inferred.join(" and per ")
+                        )
                     },
                 )
             } else {
                 (
-                    format!("declared key {key} names columns the model does not output"),
+                    format!("declared key {key} names columns the model doesn't output"),
                     format!("missing: {}", d.missing_columns.join(", ")),
                 )
             };
@@ -55,9 +58,9 @@ impl Check for UnprovenDeclaredKey {
                 message,
                 primary: cx.locator.label(&model.relation, None, label),
                 secondary: vec![],
-                notes: vec![format!("{} remains the only guarantee", d.key.origin.describe())],
+                notes: vec![format!("only {} checks it", d.key.origin.describe())],
                 fix: Some(Fix {
-                    message: "declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup".into(),
+                    message: "declare the keys of the tables it reads (meta.cardinal.grain), or make the SQL return one row per key, e.g. with GROUP BY or a row_number() dedup".into(),
                     replacement: None,
                 }),
                 evidence: facts.keys.iter().map(|k| model.arena.explain(k.why)).collect(),

@@ -333,3 +333,19 @@ fn projection_dropping_every_key_is_not_proven() {
         "falls back to the first key: {v:?}"
     );
 }
+
+#[test]
+fn key_carried_by_covers_beats_one_carried_only_by_within() {
+    // The left side keeps every order (covers), carrying order_number; the right side of
+    // the left join may miss some (within), carrying order_id. order_id is the first key,
+    // but only order_number can prove at least once.
+    let v = two_keys()
+        .sql(
+            "select a.order_number, b.order_id from orders2 a
+             left join (select * from orders2 where fee > 0) b on a.order_number = b.order_number",
+        )
+        .verdict("orders2");
+    assert_eq!(v.key, vec!["order_number"], "{v:?}");
+    assert_eq!(v.site, Site::Output);
+    assert!(v.exactly_once(), "{v:?}");
+}

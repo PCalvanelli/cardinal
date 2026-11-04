@@ -24,8 +24,8 @@ expression: json_without_timing(&out)
       "message": "many-to-many join",
       "model": "model.shop.customer_promos",
       "notes": [
-        "stg_orders has grain (order_id)",
-        "shop.promos has grain (customer_id, promo_code)",
+        "stg_orders has one row per (order_id)",
+        "shop.promos has one row per (customer_id, promo_code)",
         "every pair of matching rows becomes one output row"
       ],
       "related": [],
@@ -67,9 +67,9 @@ expression: json_without_timing(&out)
         "message": "count each customer_id once, on its first order_date, and sum those instead",
         "replacement": null
       },
-      "label": "adds up counts of distinct customer_id across order_date",
+      "label": "adds up distinct counts of customer_id across order_date",
       "line": 3,
-      "message": "distinct count is summed",
+      "message": "adds up a number that can't be added",
       "model": "model.shop.customers_to_date",
       "notes": [
         "a customer_id that appears with more than one order_date is counted once for each"
@@ -92,22 +92,22 @@ expression: json_without_timing(&out)
       "end_column": 41,
       "end_line": 4,
       "evidence": [
-        "shipping_fee is determined by (order_id)",
-        "(order_id) plus the GROUP BY columns is not a key of the aggregate input",
-        "one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain"
+        "shipping_fee has one value per (order_id)",
+        "(order_id) plus the GROUP BY columns don't identify one input row",
+        "one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)"
       ],
       "file": "models/marts/daily_revenue.sql",
       "fingerprint": "sum(shipping_fee)",
       "fix": {
-        "message": "sum shipping_fee per (order_id) before the join, or read it from a relation at that grain",
+        "message": "sum shipping_fee per (order_id) before the join, or read it from a table with one row per (order_id)",
         "replacement": null
       },
-      "label": "shipping_fee is determined by (order_id)",
+      "label": "shipping_fee has one value per (order_id)",
       "line": 4,
-      "message": "aggregation fans out",
+      "message": "a join repeats values that are then added up",
       "model": "model.shop.daily_revenue",
       "notes": [
-        "order_lines has grain (order_id, line_id), proven: one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain"
+        "order_lines has one row per (order_id, line_id): one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)"
       ],
       "related": [
         {
@@ -127,20 +127,20 @@ expression: json_without_timing(&out)
       "end_column": null,
       "end_line": null,
       "evidence": [
-        "key of shop.orders from test source_unique_shop_orders_order_id"
+        "key of shop.orders (test source_unique_shop_orders_order_id)"
       ],
       "file": "models/marts/latest_order.sql",
       "fingerprint": "(customer_id)",
       "fix": {
-        "message": "declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup",
+        "message": "declare the keys of the tables it reads (meta.cardinal.grain), or make the SQL return one row per key, e.g. with GROUP BY or a row_number() dedup",
         "replacement": null
       },
-      "label": "the SQL proves grain (order_id)",
+      "label": "the SQL guarantees one row per (order_id)",
       "line": null,
-      "message": "declared key (customer_id) is not proven by the SQL",
+      "message": "declared key (customer_id) isn't guaranteed by the SQL",
       "model": "model.shop.latest_order",
       "notes": [
-        "test unique_latest_order_customer_id remains the only guarantee"
+        "only test unique_latest_order_customer_id checks it"
       ],
       "related": [],
       "severity": "warning"
@@ -161,9 +161,9 @@ expression: json_without_timing(&out)
         "message": "count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)",
         "replacement": null
       },
-      "label": "adds up counts of distinct customer_id across order_date",
+      "label": "adds up distinct counts of customer_id across order_date",
       "line": 3,
-      "message": "distinct count is summed",
+      "message": "adds up a number that can't be added",
       "model": "model.shop.monthly_active_customers",
       "notes": [
         "a customer_id that appears with more than one order_date is counted once for each"
@@ -189,16 +189,15 @@ expression: json_without_timing(&out)
       "file": "models/sources.yml",
       "fingerprint": "sourcewithoutkey(relationid(\"source.shop.shop.events\"))",
       "fix": {
-        "message": "declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test",
+        "message": "declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess",
         "replacement": null
       },
       "label": "",
       "line": null,
-      "message": "grain unknown for 1 model: source shop.events declares no key",
+      "message": "can't check 1 model: source shop.events has no known key",
       "model": "source.shop.shop.events",
       "notes": [
-        "affects order_events",
-        "shop.events declares no key"
+        "affects order_events"
       ],
       "related": [],
       "severity": "info"
@@ -220,6 +219,8 @@ expression: json_without_timing(&out)
       "G005": 1,
       "G008": 2
     },
+    "guesses_failed": 0,
+    "guesses_used": 0,
     "models_analyzed": 15,
     "models_with_known_grain": 14,
     "suppressed": 1

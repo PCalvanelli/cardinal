@@ -3,10 +3,10 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId, NO_EVIDENCE};
 use crate::facts::{
-    ColSet, DistinctCount, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key, RelationFacts,
-    RowLoss, UnknownReason,
+    ColSet, Fd, GrainStatus, Ind, JoinSite, Key, Measure, MeasureKind, MeasureSite, RelationFacts,
+    RowLoss, Unit, UnitSite, UnknownReason,
 };
-use cardinal_dbt::{Assumption, DeclOrigin, DeclaredKey, Relation, RelationId};
+use cardinal_dbt::{Assumption, DeclOrigin, DeclaredKey, MeasureDecl, Relation, RelationId};
 use cardinal_sql::datafusion_common::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use cardinal_sql::types::warehouse_type;
 use serde::{Deserialize, Serialize};
@@ -50,12 +50,20 @@ pub struct SummaryInd {
     pub assumptions: Vec<Assumption>,
 }
 
-/// A distinct-count column (see `DistinctCount`).
+/// A column that can't be freely added up (see `Measure`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SummaryDistinct {
+pub struct SummaryMeasure {
     pub col: usize,
-    pub agree_on: Vec<usize>,
-    pub site: DistinctSite,
+    pub kind: MeasureKind,
+    pub site: MeasureSite,
+}
+
+/// An amount whose unit varies by row (see `Unit`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryUnit {
+    pub col: usize,
+    pub unit: Option<Vec<usize>>,
+    pub site: UnitSite,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,9 +93,16 @@ pub struct RelationSummary {
     /// Where rows of the relations it reads may be lost, here or upstream.
     #[serde(default)]
     pub losses: Vec<RowLoss>,
-    /// Columns holding distinct counts.
+    /// Columns that can't be freely added up: distinct counts, averages, ratios,
+    /// percentiles, stocks.
     #[serde(default)]
-    pub distinct: Vec<SummaryDistinct>,
+    pub measures: Vec<SummaryMeasure>,
+    /// Amounts whose unit varies by row.
+    #[serde(default)]
+    pub units: Vec<SummaryUnit>,
+    /// Columns holding the result of a summing or counting aggregate.
+    #[serde(default)]
+    pub aggregated: Vec<usize>,
 }
 
 impl RelationSummary {
@@ -114,6 +129,60 @@ impl RelationSummary {
         !self.keys.is_empty()
     }
 
+    /// Whether no two rows agree on the columns named `names`: through the functional
+    /// dependencies, they determine a key. False when a column is missing.
+    pub fn is_key(&self, names: &[String]) -> bool {
+        let Some(cols) = names
+            .iter()
+            .map(|n| self.col(n))
+            .collect::<Option<ColSet>>()
+        else {
+            return false;
+        };
+        let keys: Vec<Key> = self
+            .keys
+            .iter()
+            .map(|k| Key {
+                cols: k.cols.iter().copied().collect(),
+                why: NO_EVIDENCE,
+            })
+            .collect();
+        let fds: Vec<Fd> = self
+            .fds
+            .iter()
+            .map(|f| Fd {
+                lhs: f.lhs.iter().copied().collect(),
+                rhs: f.rhs.iter().copied().collect(),
+                why: NO_EVIDENCE,
+                entity: f.entity,
+            })
+            .collect();
+        let c = crate::facts::closure(self.columns.len(), &keys, &fds, &cols);
+        keys.iter().any(|k| k.cols.is_subset(&c))
+    }
+
+    /// The keys the SQL proves, leaving out declared keys it is only trusted with.
+    pub fn proven_keys(&self) -> impl Iterator<Item = &SummaryKey> {
+        self.keys.iter().filter(|k| !k.is_trusted(&self.relation))
+    }
+
+    /// Column names, by position.
+    pub fn names(&self, cols: &[usize]) -> Vec<String> {
+        cols.iter().map(|c| self.columns[*c].name.clone()).collect()
+    }
+}
+
+impl SummaryKey {
+    /// A declared key taken on trust, because the SQL does not prove it (or there is no
+    /// SQL): it rests on the declaration itself.
+    pub fn is_trusted(&self, relation: &RelationId) -> bool {
+        self.assumptions
+            .iter()
+            .any(|a| matches!(a, Assumption::Key { relation: r, .. } if r == relation))
+    }
+}
+
+impl RelationSummary {
     /// Facts for a TableScan of this relation, with evidence in the reading model's arena.
     pub fn to_facts(&self, arena: &mut EvidenceArena) -> RelationFacts {
         let upstream = |assumptions: &[Assumption], summary: String, arena: &mut EvidenceArena| {
@@ -183,8 +252,9 @@ impl RelationSummary {
             .filter(|(_, a)| !a.is_empty())
             .map(|(c, a)| (*c, upstream(a, String::new(), arena)))
             .collect();
+        let width = self.columns.len();
         RelationFacts {
-            width: self.columns.len(),
+            width,
             keys,
             fds,
             not_null: self.not_null.iter().copied().collect(),
@@ -202,19 +272,89 @@ impl RelationSummary {
                 .map(|(r, p)| (*r, p.iter().copied().collect()))
                 .collect(),
             nn_why,
-            distinct: self
-                .distinct
+            measures: self
+                .measures
                 .iter()
-                .filter(|d| {
-                    d.col < self.columns.len() && d.agree_on.iter().all(|c| *c < self.columns.len())
+                .map(|m| Measure {
+                    col: m.col,
+                    kind: m.kind.clone(),
+                    site: Arc::new(m.site.clone()),
                 })
-                .map(|d| DistinctCount {
-                    col: d.col,
-                    agree_on: d.agree_on.iter().copied().collect(),
-                    site: Arc::new(d.site.clone()),
+                .filter(|m| m.remap(|c| (c < width).then_some(c)).is_some())
+                .collect(),
+            units: self
+                .units
+                .iter()
+                .filter(|u| u.col < width && u.unit.iter().flatten().all(|c| *c < width))
+                .map(|u| Unit {
+                    col: u.col,
+                    unit: u.unit.as_ref().map(|x| x.iter().copied().collect()),
+                    site: Arc::new(u.site.clone()),
                 })
                 .collect(),
+            aggregated: self
+                .aggregated
+                .iter()
+                .copied()
+                .filter(|c| *c < width)
+                .collect(),
         }
+    }
+}
+
+/// Apply a relation's meta.cardinal.measure and meta.cardinal.unit declarations over
+/// what the SQL inferred: a declaration replaces an inferred fact on its column.
+fn declared_measures(
+    rel: &Relation,
+    columns: &[SummaryColumn],
+    measures: &mut Vec<SummaryMeasure>,
+    units: &mut Vec<SummaryUnit>,
+) {
+    let pos = |n: &str| columns.iter().position(|c| c.name == n);
+    for d in &rel.measures {
+        let Some(col) = pos(&d.column) else { continue };
+        let kind = match &d.kind {
+            MeasureDecl::Additive => None,
+            MeasureDecl::NonAdditive => Some((
+                MeasureKind::NonAdditive {
+                    agree_on: ColSet::new(),
+                },
+                vec![],
+            )),
+            MeasureDecl::Stock { over } => {
+                let Some(cols) = over.iter().map(|o| pos(o)).collect::<Option<ColSet>>() else {
+                    continue;
+                };
+                Some((MeasureKind::Stock { over: Some(cols) }, over.clone()))
+            }
+        };
+        measures.retain(|m| m.col != col);
+        if let Some((kind, over)) = kind {
+            measures.push(SummaryMeasure {
+                col,
+                kind,
+                site: MeasureSite::Declared {
+                    relation: rel.id.clone(),
+                    column: d.column.clone(),
+                    over,
+                },
+            });
+        }
+    }
+    for d in &rel.units {
+        let (Some(col), Some(unit)) = (pos(&d.column), pos(&d.unit)) else {
+            continue;
+        };
+        units.retain(|u| u.col != col);
+        units.push(SummaryUnit {
+            col,
+            unit: Some(vec![unit]),
+            site: UnitSite {
+                relation: rel.id.clone(),
+                column: d.column.clone(),
+                unit: d.unit.clone(),
+            },
+        });
     }
 }
 
@@ -274,6 +414,9 @@ pub fn summary_from_declared(rel: &Relation, unknown: UnknownReason) -> Relation
     } else {
         GrainStatus::Known
     };
+    let mut measures = Vec::new();
+    let mut units = Vec::new();
+    declared_measures(rel, &columns, &mut measures, &mut units);
     RelationSummary {
         relation: rel.id.clone(),
         display: rel.display.clone(),
@@ -289,7 +432,9 @@ pub fn summary_from_declared(rel: &Relation, unknown: UnknownReason) -> Relation
         within,
         ranks: vec![],
         losses: vec![],
-        distinct: vec![],
+        measures,
+        units,
+        aggregated: vec![],
     }
 }
 
@@ -455,6 +600,25 @@ pub fn summarize(
     let covers = inds(&facts.covers);
     let mut within = inds(&facts.within);
     within.extend(declared_references(rel, &columns, &within));
+    let mut measures: Vec<SummaryMeasure> = facts
+        .measures
+        .iter()
+        .map(|m| SummaryMeasure {
+            col: m.col,
+            kind: m.kind.clone(),
+            site: (*m.site).clone(),
+        })
+        .collect();
+    let mut units: Vec<SummaryUnit> = facts
+        .units
+        .iter()
+        .map(|u| SummaryUnit {
+            col: u.col,
+            unit: u.unit.as_ref().map(|x| x.iter().copied().collect()),
+            site: (*u.site).clone(),
+        })
+        .collect();
+    declared_measures(rel, &columns, &mut measures, &mut units);
     let summary = RelationSummary {
         relation: rel.id.clone(),
         display: rel.display.clone(),
@@ -487,15 +651,9 @@ pub fn summarize(
             .map(|(r, p)| (*r, p.iter().copied().collect()))
             .collect(),
         losses: vec![],
-        distinct: facts
-            .distinct
-            .iter()
-            .map(|d| SummaryDistinct {
-                col: d.col,
-                agree_on: d.agree_on.iter().copied().collect(),
-                site: (*d.site).clone(),
-            })
-            .collect(),
+        measures,
+        units,
+        aggregated: facts.aggregated.iter().copied().collect(),
     };
     (summary, checks)
 }

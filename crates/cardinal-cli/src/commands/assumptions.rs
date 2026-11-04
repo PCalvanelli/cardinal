@@ -82,7 +82,9 @@ pub fn run(dir: Option<PathBuf>, format: Format, emit_tests: bool) -> u8 {
                         "assumption": e.assumption,
                         "description": e.assumption.describe(&display),
                         "checked": e.status.is_checked(),
+                        "checked_once": e.status.checked_once(),
                         "declared_by": e.status.declared_by,
+                        "guessed": e.status.guessed,
                         "checked_by": e.status.checked_by.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
                         "caveats": e.status.caveats,
                         "used_by": e.used_by.iter().map(&display).collect::<Vec<_>>(),
@@ -101,40 +103,51 @@ pub fn run(dir: Option<PathBuf>, format: Format, emit_tests: bool) -> u8 {
         Format::Text => {
             let unchecked = entries.iter().filter(|e| !e.status.is_checked()).count();
             if entries.is_empty() {
-                println!("No proof rests on a declared fact yet.");
+                println!("No proof relies on a declared fact yet.");
                 return 0;
             }
             println!(
-                "Cardinal's proofs rest on {}; {} not checked when dbt runs.",
-                plural(entries.len(), "assumption", "assumptions"),
-                if unchecked == 1 {
-                    "1 is".to_string()
-                } else {
-                    format!("{unchecked} are")
+                "Cardinal takes {} on trust; {}.",
+                plural(entries.len(), "fact", "facts"),
+                match unchecked {
+                    0 => "dbt tests check all of them".to_string(),
+                    1 => "1 isn't checked when dbt runs".to_string(),
+                    n => format!("{n} aren't checked when dbt runs"),
                 }
             );
             for e in &entries {
                 println!();
                 let tag = if e.status.is_checked() {
                     "checked  "
+                } else if e.status.checked_once() {
+                    "ONCE     "
                 } else {
                     "UNCHECKED"
                 };
                 println!("{tag}  {}", e.assumption.describe(&display));
                 let st = &e.status;
                 let mut how = if st.is_checked() {
-                    format!(
+                    let mut h = format!(
                         "by {}",
                         st.checked_by
                             .iter()
                             .map(|c| c.to_string())
                             .collect::<Vec<_>>()
                             .join(" and ")
+                    );
+                    if let Some(g) = &st.guessed {
+                        h.push_str(&format!(" (Cardinal's guess, passed on {})", g.date));
+                    }
+                    h
+                } else if st.checked_once() {
+                    format!(
+                        "{}, but that test is no longer in the project, so dbt does not check it again",
+                        st.origin()
                     )
                 } else {
-                    let mut h = format!("declared by {}", st.declared_by.join(" and "));
+                    let mut h = st.origin();
                     for c in &st.checked_by {
-                        h.push_str(&format!("; {c} does not fail the build"));
+                        h.push_str(&format!("; {}", cardinal_dbt::weak_check(c)));
                     }
                     h
                 };
@@ -308,7 +321,7 @@ fn tests_need_dbt_utils(by_rel: &BTreeMap<RelationId, Vec<TestYaml>>) -> bool {
         .any(|t| t.lines[0].contains("dbt_utils"))
 }
 
-fn ref_call(r: &Relation) -> String {
+pub fn ref_call(r: &Relation) -> String {
     match (&r.kind, r.display.split_once('.')) {
         (Kind::Source, Some((src, table))) => format!("source('{src}', '{table}')"),
         _ => format!("ref('{}')", r.display),

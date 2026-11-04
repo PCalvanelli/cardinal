@@ -1,0 +1,108 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+warning[G008]: adds up a number that can't be added
+ --> models/marts/account_totals.sql:1:20
+  |
+1 | select account_id, sum(balance) as total_balance
+  |                    ^^^^^^^^^^^^ adds balance from different snapshot_date values
+  |
+ ::: models/sources.yml
+  |
+  = balance is declared a stock over snapshot_date
+  |
+  = note: balance is a level at each snapshot_date, like an account balance; adding several snapshot_date values counts the same amount once per snapshot_date
+  = help: group by snapshot_date, or keep one snapshot_date per group (such as the latest) before summing
+  = see: cardinal explain G008
+
+warning[G008]: adds up a number that can't be added
+ --> models/marts/balance_total.sql:1:8
+  |
+1 | select sum(balance) as total_balance
+  |        ^^^^^^^^^^^^ adds balance from rows that may come from different snapshot_date values
+  |
+ ::: models/sources.yml
+  |
+  = balance is declared a stock over snapshot_date
+  |
+  = note: balance is a level at each snapshot_date, like an account balance; adding several snapshot_date values counts the same amount once per snapshot_date
+  = help: group by snapshot_date, or keep one snapshot_date per group (such as the latest) before summing
+  = see: cardinal explain G008
+
+error[G009]: adds amounts in different units
+ --> models/marts/daily_revenue.sql:1:20
+  |
+1 | select order_date, sum(amount) as revenue
+  |                    ^^^^^^^^^^^ adds up amount across different currency values
+  |
+ ::: models/sources.yml
+  |
+  = currency is declared as the unit of amount
+  |
+  = note: rows with different currency values go into one result, like adding dollars to yen
+  = help: group by currency, filter to one currency, or convert amount to one unit before the sum
+  = see: cardinal explain G009
+
+warning[G008]: adds up a number that can't be added
+ --> models/marts/monthly_completion.sql:3:5
+  |
+3 |     sum(completion_rate) as completion_rate
+  |     ^^^^^^^^^^^^^^^^^^^^ adds up ratios; a ratio can't be added
+  |
+ ::: models/intermediate/daily_completion.sql:4:5
+  |
+4 |     sum(case when status = 'complete' then 1 else 0 end) / count(*) as completion_rate
+  |     --------------------------------------------------------------- a ratio is computed here
+  |
+  = note: adding ratios is not the ratio of the totals: 1/2 + 1/2 is 1, but 2/4 is 1/2
+  = help: sum the numerator and the denominator separately per (date_trunc('month', order_date)), then divide
+  = see: cardinal explain G008
+
+warning[G008]: adds up a number that can't be added
+ --> models/marts/region_aov.sql:4:5
+  |
+4 |     sum(a.avg_order_value) as summed_aov,
+  |     ^^^^^^^^^^^^^^^^^^^^^^ adds up averages; an average can't be added
+  |
+ ::: models/intermediate/customer_aov.sql:5:5
+  |
+5 |     avg(amount) as avg_order_value,
+  |     ----------- an average is computed here
+  |
+  = note: a sum of averages grows with the number of groups, not with the values
+  = help: sum the values and count the rows separately per (region, currency), then divide, or use avg() over the underlying rows
+  = see: cardinal explain G008
+
+warning[G008]: adds up a number that can't be added
+ --> models/marts/region_aov.sql:5:5
+  |
+5 |     avg(a.avg_order_value) as mean_aov,
+  |     ^^^^^^^^^^^^^^^^^^^^^^ takes an average of averages; each counts the same however many rows it covers
+  |
+ ::: models/intermediate/customer_aov.sql:5:5
+  |
+5 |     avg(amount) as avg_order_value,
+  |     ----------- an average per group
+  |
+  = note: an average of averages weights a group of one row like a group of a thousand
+  = help: average the underlying rows per (region, currency), or weight each average by its row count: sum(avg_order_value * n) / sum(n)
+  = see: cardinal explain G008
+
+warning[G008]: adds up a number that can't be added
+  --> models/marts/revenue_to_date_total.sql:3:5
+   |
+ 3 |     sum(revenue_to_date) as total_to_date,
+   |     ^^^^^^^^^^^^^^^^^^^^ adds running totals from different order_date values
+   |
+  ::: models/intermediate/running_revenue.sql:11:5
+   |
+11 |     sum(revenue) over (partition by currency order by order_date) as revenue_to_date
+   |     ------------ a running total over order_date
+   |
+   = note: each row's revenue_to_date already includes the rows before it, so adding rows from several order_date values counts those rows again
+   = help: add up the underlying values per (currency) instead, or keep only the last order_date of each group
+   = see: cardinal explain G008
+
+Analyzed 15 models in <time>: 14 with a known key (93%).
+Findings: 1 error, 6 warnings (G008 ×6, G009 ×1).

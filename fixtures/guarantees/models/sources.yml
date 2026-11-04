@@ -1,0 +1,31 @@
+version: 2
+sources:
+  - name: shop
+    schema: shop
+    tables:
+      - name: customers
+        columns:
+          - name: customer_id
+            tests: [unique, not_null]
+      - name: orders
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+          - name: customer_id
+            tests: [not_null]
+      - name: order_items
+        meta:
+          cardinal:
+            grain: [order_id, line_id]
+      - name: products
+        columns:
+          - name: product_id
+            tests: [unique, not_null]
+      - name: payments
+        columns:
+          - name: payment_id
+            tests: [unique, not_null]
+      - name: promos
+        meta:
+          cardinal:
+            grain: [customer_id, promo_code]

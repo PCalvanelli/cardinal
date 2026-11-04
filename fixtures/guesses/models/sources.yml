@@ -1,0 +1,15 @@
+version: 2
+sources:
+  - name: app
+    schema: app
+    tables:
+      - name: orders
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+          - name: customer_id
+            tests: [not_null]
+      - name: customers
+        description: no key declared
+      - name: events
+        description: no key declared

@@ -1,0 +1,27 @@
+version: 2
+sources:
+  - name: metrics
+    schema: metrics
+    tables:
+      - name: orders
+        meta:
+          cardinal:
+            grain: [order_id]
+        columns:
+          - name: amount
+            meta:
+              cardinal:
+                unit: currency
+      - name: customers
+        meta:
+          cardinal:
+            grain: [customer_id]
+      - name: balances
+        meta:
+          cardinal:
+            grain: [account_id, snapshot_date]
+        columns:
+          - name: balance
+            meta:
+              cardinal:
+                measure: {kind: stock, over: [snapshot_date]}

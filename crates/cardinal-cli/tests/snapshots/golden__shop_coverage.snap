@@ -2,7 +2,9 @@
 source: crates/cardinal-cli/tests/golden.rs
 expression: out
 ---
-14 of 15 models have known grain (93%); 15 planned without E-codes (100%).
+14 of 15 models have a known key (93%); Cardinal could read the SQL of 15 (100%).
 
-To cover the rest, in order of models unlocked:
-   1. shop.events declares no key   1 model
+To check the rest, fix these, most models first:
+   1. shop.events has no known key   1 model
+
+Next: 1 source without a known key keeps 1 model from being checked: shop.events. Run cardinal guess so dbt can test likely keys, or declare it.

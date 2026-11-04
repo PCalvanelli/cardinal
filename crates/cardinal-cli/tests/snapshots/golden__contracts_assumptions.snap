@@ -2,7 +2,7 @@
 source: crates/cardinal-cli/tests/golden.rs
 expression: out
 ---
-Cardinal's proofs rest on 8 assumptions; 4 are not checked when dbt runs.
+Cardinal takes 8 facts on trust; 4 aren't checked when dbt runs.
 
 UNCHECKED  key (order_id, line_id) of shop.order_items
            declared by meta.cardinal.grain
@@ -13,7 +13,7 @@ UNCHECKED  shop.order_items.line_id is not null
            used by daily_revenue, order_lines
 
 UNCHECKED  shop.order_items.order_id is not null
-           declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id; test source_not_null_shop_order_items_order_id (severity: warn) does not fail the build
+           declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id; test source_not_null_shop_order_items_order_id only warns, so it doesn't fail the build
            used by daily_revenue, order_lines
 
 UNCHECKED  shop.order_items.order_id references shop.orders.order_id

@@ -3,8 +3,9 @@
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
 use crate::facts::{
-    Cardinality, ColSet, DistinctCount, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key,
-    LossSite, MAX_KEYS, RelationFacts, RowLoss, UnknownReason, closure, minimize,
+    Cardinality, ColSet, Computed, DistinctSite, Fd, GrainStatus, Ind, JoinSite, Key, LossSite,
+    MAX_KEYS, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, Unit, UnknownReason,
+    closure, minimize,
 };
 use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
@@ -19,6 +20,7 @@ use cardinal_sql::datafusion_expr::{
     BinaryExpr, Expr, LogicalPlan, Operator, WindowFunctionDefinition,
 };
 use cardinal_sql::{CardinalTable, SourceText, SqlSpan};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -43,6 +45,24 @@ pub struct JoinRecord {
     pub left_grain: Option<Vec<String>>,
     pub right_grain: Option<Vec<String>>,
     pub join_type: JoinType,
+    /// Lineage of each side's join columns: left, then right.
+    pub sides: [JoinSide; 2],
+}
+
+/// What a join's equality columns on one side come from, for `cardinal guess`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinSide {
+    /// For each join pair, the relation columns this side's value is read from, as the
+    /// SQL proves it (no declared reference).
+    pub from: Vec<Vec<(RelationId, String)>>,
+    /// For each join pair, relations every row of which this side holds, with the
+    /// column paired to the join column.
+    pub covers: Vec<Vec<(RelationId, String)>>,
+    /// No two rows of this side agree on the join columns.
+    pub unique: bool,
+    /// Rows of this side may be lost here only because nothing shows that its join
+    /// values all appear on the other side: a reference would prove they are kept.
+    pub needs_reference: bool,
 }
 
 /// A model after analysis: its plan with facts on every node.
@@ -179,6 +199,73 @@ pub const DISTINCT_COUNTS: &[&str] = &["approx_distinct", "approx_count_distinct
 pub fn is_distinct_count(name: &str, distinct: bool) -> bool {
     let n = name.to_ascii_lowercase();
     (n == "count" && distinct) || DISTINCT_COUNTS.contains(&n.as_str())
+}
+
+/// Aggregates whose result counts or adds up rows: dividing two of these makes a ratio.
+/// min, max and the like pick one value, so `sum(a) / max(rate)` is a conversion.
+fn is_counting(name: &str) -> bool {
+    matches!(
+        name,
+        "sum" | "count" | "avg" | "mean" | "approx_distinct" | "approx_count_distinct" | "hll"
+    )
+}
+
+/// Aggregates whose result can't be added up across groups.
+fn computed_kind(name: &str) -> Option<Computed> {
+    match name {
+        "avg" | "mean" => Some(Computed::Average),
+        "median"
+        | "approx_median"
+        | "percentile_cont"
+        | "percentile_disc"
+        | "approx_percentile_cont"
+        | "approx_percentile_cont_with_weight"
+        | "quantile"
+        | "quantile_cont"
+        | "quantile_disc" => Some(Computed::Percentile),
+        _ => None,
+    }
+}
+
+/// The column an aggregate argument adds up: `v`, `cast(v as …)` or
+/// `coalesce(v, <literal>)`. Anything else (`v * rate`, `case when v > 100 then 1 end`)
+/// is a different value.
+pub fn summed_col(e: &Expr, schema: &DFSchema) -> Option<usize> {
+    match unalias(e) {
+        Expr::Column(c) => col_index(schema, c),
+        Expr::Cast(c) => summed_col(&c.expr, schema),
+        Expr::TryCast(c) => summed_col(&c.expr, schema),
+        Expr::ScalarFunction(f)
+            if matches!(
+                f.func.name().to_ascii_lowercase().as_str(),
+                "coalesce" | "ifnull" | "nvl"
+            ) && f.args.len() == 2
+                && matches!(unalias(&f.args[1]), Expr::Literal(..)) =>
+        {
+            summed_col(&f.args[0], schema)
+        }
+        _ => None,
+    }
+}
+
+/// A division whose numerator and denominator both read aggregated columns:
+/// `sum(a) / sum(b)`, `count(*) / count(distinct u)`. Row-level division
+/// (`amount / fx_rate`, `cents / 100`) and `sum(cents) / 100` are conversions.
+fn is_ratio(e: &Expr, schema: &DFSchema, aggregated: &ColSet) -> bool {
+    let reads = |x: &Expr| {
+        x.column_refs()
+            .into_iter()
+            .filter_map(|c| col_index(schema, c))
+            .any(|c| aggregated.contains(&c))
+    };
+    e.exists(|x| {
+        Ok(matches!(
+            x,
+            Expr::BinaryExpr(BinaryExpr { left, op: Operator::Divide | Operator::IntegerDivide, right })
+                if reads(left) && reads(right)
+        ))
+    })
+    .unwrap_or(false)
 }
 
 /// The input column whose values a distinct-count argument counts: the column itself, or
@@ -429,6 +516,7 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
         }
     }
     let to = |c: usize| copy_of.get(&c).copied();
+    let (measures, units) = input.carried(&to);
     let nn_why = input
         .nn_why
         .iter()
@@ -452,7 +540,9 @@ pub(crate) fn project_facts(input: &RelationFacts, outs: &[Out]) -> RelationFact
             })
             .collect(),
         nn_why,
-        distinct: input.distinct.iter().filter_map(|d| d.remap(to)).collect(),
+        measures,
+        units,
+        aggregated: input.aggregated.iter().filter_map(|c| to(*c)).collect(),
     };
     f.normalize();
     f.settle_status(input.status.clone());
@@ -747,7 +837,86 @@ impl Analyzer<'_> {
             .iter()
             .map(|e| classify_out(e, schema, &input))
             .collect();
-        project_facts(&input, &outs)
+        let mut f = project_facts(&input, &outs);
+        if input.aggregated.is_empty() {
+            return f;
+        }
+        for (j, e) in p.expr.iter().enumerate() {
+            if is_ratio(e, schema, &input.aggregated) {
+                let span = self.alias_line(p.schema.field(j).name());
+                f.measures.retain(|m| m.col != j);
+                f.measures.push(Measure {
+                    col: j,
+                    kind: MeasureKind::NonAdditive {
+                        agree_on: ColSet::new(),
+                    },
+                    site: Arc::new(MeasureSite::Computed {
+                        relation: self.relation.clone(),
+                        span,
+                        what: Computed::Ratio,
+                        over: vec![],
+                    }),
+                });
+            } else if let Out::Expr { cols, .. } = &outs[j]
+                && !cols.is_empty()
+                && cols.is_subset(&input.aggregated)
+            {
+                // `coalesce(sum(a), 0)` is still a sum.
+                f.aggregated.insert(j);
+            }
+        }
+        f.normalize();
+        f
+    }
+
+    /// Where output column `name` is computed (`<expr> as name`), for labels on a column
+    /// the plan rewrote, such as a ratio of two aggregates: the expression before `as` on
+    /// that line, or the whole line when the expression ends on an earlier one. Skips
+    /// `--` comments, and allows any whitespace and quotes around the alias.
+    fn alias_line(&self, name: &str) -> Option<SqlSpan> {
+        let text = SourceText::new(self.sql);
+        let lower = self.sql.to_ascii_lowercase();
+        let name = name.to_ascii_lowercase();
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let bytes = lower.as_bytes();
+        let mut from = 0;
+        while let Some(i) = lower[from..].find("as") {
+            let at = from + i;
+            from = at + 2;
+            if lower[..at].chars().next_back().is_some_and(ident) {
+                continue;
+            }
+            let mut k = at + 2;
+            if !bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
+                continue;
+            }
+            while bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
+                k += 1;
+            }
+            let quote = matches!(bytes.get(k), Some(b'"' | b'`'));
+            if quote {
+                k += 1;
+            }
+            if !lower[k..].starts_with(&name) {
+                continue;
+            }
+            let end = k + name.len();
+            if !quote && lower[end..].chars().next().is_some_and(ident) {
+                continue;
+            }
+            let line_start = lower[..at].rfind('\n').map_or(0, |n| n + 1);
+            if lower[line_start..at].contains("--") {
+                continue;
+            }
+            let (line, _) = self.line_of(Some(text.span(at, end)))?;
+            let expr_start = text.offset(line.start);
+            let expr = self.sql[expr_start.min(at)..at].trim_end();
+            if expr.is_empty() {
+                return Some(line);
+            }
+            return Some(text.span(expr_start, expr_start + expr.len()));
+        }
+        None
     }
 
     fn filter(&mut self, f: &Filter) -> RelationFacts {
@@ -984,6 +1153,7 @@ impl Analyzer<'_> {
             {
                 f.ranks.push((out, p.clone()));
             }
+            self.window_measure(wf, schema, &input, out, &mut f);
             if is_row_number(e).is_some() {
                 f.not_null.insert(out);
                 if let Some(p) = &partition {
@@ -1021,6 +1191,170 @@ impl Analyzer<'_> {
         }
         f.normalize();
         f
+    }
+
+    /// Averages, percentiles and running totals a window computes, and window sums.
+    fn window_measure(
+        &mut self,
+        wf: &WindowFunction,
+        schema: &DFSchema,
+        input: &RelationFacts,
+        out: usize,
+        f: &mut RelationFacts,
+    ) {
+        let WindowFunctionDefinition::AggregateUDF(u) = &wf.fun else {
+            return;
+        };
+        let name = u.name().to_ascii_lowercase();
+        if is_counting(&name) {
+            f.aggregated.insert(out);
+        }
+        let span = self.call_span(&name, wf.params.args.iter());
+        let frame = &wf.params.window_frame;
+        let whole = frame.start_bound.is_unbounded() && frame.end_bound.is_unbounded();
+        let (kind, what, over) = if let Some(what) = computed_kind(&name) {
+            (
+                MeasureKind::NonAdditive {
+                    agree_on: ColSet::new(),
+                },
+                what,
+                vec![],
+            )
+        } else if matches!(name.as_str(), "sum" | "count")
+            && !wf.params.order_by.is_empty()
+            && !whole
+        {
+            // A running or rolling total: each row adds up the rows before it.
+            let Some(over) = wf
+                .params
+                .order_by
+                .iter()
+                .map(|o| expr_cols(&o.expr, schema))
+                .collect::<Option<Vec<ColSet>>>()
+                .map(|v| v.into_iter().flatten().collect::<ColSet>())
+            else {
+                return;
+            };
+            if over.is_empty() || over.is_subset(&input.closure(&ColSet::new())) {
+                return;
+            }
+            let names = column_names(schema, &over);
+            (
+                MeasureKind::Stock { over: Some(over) },
+                Computed::RunningTotal,
+                names,
+            )
+        } else {
+            return;
+        };
+        f.measures.push(Measure {
+            col: out,
+            kind,
+            site: Arc::new(MeasureSite::Computed {
+                relation: self.relation.clone(),
+                span,
+                what,
+                over,
+            }),
+        });
+    }
+
+    /// The span of the call `name(…)` whose arguments read the given expressions' columns.
+    fn call_span<'e>(&self, name: &str, args: impl Iterator<Item = &'e Expr>) -> Option<SqlSpan> {
+        let text = SourceText::new(self.sql);
+        args.flat_map(|a| a.column_refs())
+            .find_map(|c| c.spans().first())
+            .and_then(|s| SqlSpan::from_df(&s))
+            .map(|s| text.enclosing_call(s, name).unwrap_or(s))
+    }
+
+    /// What an aggregate's outputs are: averages and percentiles, sums and counts (for
+    /// ratios), and stocks and amounts it keeps apart by group.
+    fn aggregate_measures(&mut self, a: &Aggregate, input: &RelationFacts, f: &mut RelationFacts) {
+        let schema = a.input.schema();
+        let g = a.group_expr.len();
+        // Plain group columns: input position -> output position.
+        let group_of: BTreeMap<usize, usize> = a
+            .group_expr
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match unalias(e) {
+                Expr::Column(c) => col_index(schema, c).map(|p| (p, i)),
+                _ => None,
+            })
+            .collect();
+        let bare: ColSet = group_of.keys().copied().collect();
+        let grouped = input.closure(&bare);
+        let constant = input.closure(&ColSet::new());
+        // Output group columns that determine `x`, when every group agrees on it.
+        let per_group = |x: &ColSet| -> Option<ColSet> {
+            if x.is_subset(&constant) || !x.is_subset(&grouped) {
+                return None;
+            }
+            let m = if x.is_subset(&bare) {
+                x.clone()
+            } else {
+                input.minimize(&bare, x, &[])
+            };
+            Some(m.iter().map(|c| group_of[c]).collect())
+        };
+        for (j, e) in a.aggr_expr.iter().enumerate() {
+            let Expr::AggregateFunction(af) = unalias(e) else {
+                continue;
+            };
+            let out = g + j;
+            let name = af.func.name().to_ascii_lowercase();
+            if is_counting(&name) {
+                f.aggregated.insert(out);
+            }
+            if let Some(what) = computed_kind(&name) {
+                let order = af.params.order_by.iter().map(|o| &o.expr);
+                let span = self.call_span(&name, af.params.args.iter().chain(order));
+                f.measures.push(Measure {
+                    col: out,
+                    kind: MeasureKind::NonAdditive {
+                        agree_on: ColSet::new(),
+                    },
+                    site: Arc::new(MeasureSite::Computed {
+                        relation: self.relation.clone(),
+                        span,
+                        what,
+                        over: vec![],
+                    }),
+                });
+            }
+            if !matches!(name.as_str(), "sum" | "avg" | "mean" | "min" | "max")
+                || af.params.args.len() != 1
+            {
+                continue;
+            }
+            let Some(c) = summed_col(&af.params.args[0], schema) else {
+                continue;
+            };
+            // A per-group total of a stock is still a stock, as long as each group
+            // stays within one value of what it is a stock over.
+            if let Some(m) = input.measures.iter().find(|m| m.col == c)
+                && let MeasureKind::Stock { over: Some(over) } = &m.kind
+                && let Some(over) = per_group(over)
+            {
+                f.measures.push(Measure {
+                    col: out,
+                    kind: MeasureKind::Stock { over: Some(over) },
+                    site: m.site.clone(),
+                });
+            }
+            // An amount summed within one unit keeps that unit.
+            if let Some(u) = input.units.iter().find(|u| u.col == c)
+                && let Some(x) = &u.unit
+                && let Some(unit) = per_group(x)
+            {
+                f.units.push(Unit {
+                    col: out,
+                    unit: Some(unit),
+                    site: u.site.clone(),
+                });
+            }
+        }
     }
 
     fn aggregate(&mut self, a: &Aggregate) -> RelationFacts {
@@ -1065,6 +1399,7 @@ impl Analyzer<'_> {
         f.keys.push(Key { cols: group, why });
         f.repeats = vec![None; f.width];
         self.distinct_counts(a, &input, &mut f);
+        self.aggregate_measures(a, &input, &mut f);
         f.normalize();
         f.status = GrainStatus::Known;
         f
@@ -1139,10 +1474,10 @@ impl Analyzer<'_> {
                     .collect(),
                 per,
             };
-            f.distinct.push(DistinctCount {
+            f.measures.push(Measure {
                 col: g + j,
-                agree_on,
-                site: Arc::new(site),
+                kind: MeasureKind::NonAdditive { agree_on },
+                site: Arc::new(MeasureSite::Distinct(site)),
             });
         }
     }
@@ -1418,7 +1753,12 @@ impl Analyzer<'_> {
             left_grain: grain(&l, ls),
             right_grain: grain(&r, rs),
             join_type: j.join_type,
+            sides: [
+                self.join_side(&l, pairs.iter().map(|p| p.0), left_unique),
+                self.join_side(&r, pairs.iter().map(|p| p.1), right_unique),
+            ],
         });
+        let record = self.joins.len() - 1;
 
         let shift = |s: &ColSet| -> ColSet { s.iter().map(|c| c + nl).collect() };
         let width = j.schema.fields().len();
@@ -1463,6 +1803,21 @@ impl Analyzer<'_> {
             JoinType::RightAnti => Err("an anti join drops every row that has a match".into()),
             _ => Err(String::new()),
         };
+        let needs_reference = |side: &RelationFacts, left: bool| {
+            !extra
+                && !pairs.is_empty()
+                && pairs
+                    .iter()
+                    .all(|p| side.not_null.contains(&if left { p.0 } else { p.1 }))
+        };
+        let left_needs = left_kept.is_err()
+            && matches!(jt, JoinType::Inner | JoinType::Right | JoinType::LeftSemi)
+            && needs_reference(&l, true);
+        let right_needs = right_kept.is_err()
+            && matches!(jt, JoinType::Inner | JoinType::Left | JoinType::RightSemi)
+            && needs_reference(&r, false);
+        self.joins[record].sides[0].needs_reference = left_needs;
+        self.joins[record].sides[1].needs_reference = right_needs;
         let kept_covers = |side: &RelationFacts,
                            kept: &Result<Option<EvidenceId>, String>,
                            offset: usize,
@@ -1733,11 +2088,27 @@ impl Analyzer<'_> {
             nn_why,
             // A row repeated by the join repeats its whole side, agree_on included, so
             // the fact holds; the repetition itself is G001's to report.
-            distinct: l
-                .distinct
+            measures: l
+                .measures
                 .iter()
                 .cloned()
-                .chain(r.distinct.iter().filter_map(|d| d.remap(|c| Some(c + nl))))
+                .chain(r.measures.iter().filter_map(|d| d.remap(|c| Some(c + nl))))
+                .collect(),
+            units: l
+                .units
+                .iter()
+                .cloned()
+                .chain(r.units.iter().map(|u| Unit {
+                    col: u.col + nl,
+                    unit: u.unit.as_ref().map(&shift),
+                    site: u.site.clone(),
+                }))
+                .collect(),
+            aggregated: l
+                .aggregated
+                .iter()
+                .copied()
+                .chain(r.aggregated.iter().map(|c| c + nl))
                 .collect(),
         };
         f.normalize();
@@ -1752,6 +2123,39 @@ impl Analyzer<'_> {
     /// `other` has the same values. Both follow when `side` takes those values from a
     /// relation R (a within fact) and `other` contains every row of R (a covers fact)
     /// on the same columns.
+    /// Lineage of one side's join columns `cols`, in pair order.
+    fn join_side(
+        &self,
+        side: &RelationFacts,
+        cols: impl Iterator<Item = usize>,
+        unique: bool,
+    ) -> JoinSide {
+        let mut out = JoinSide {
+            unique,
+            ..JoinSide::default()
+        };
+        for c in cols {
+            let pick = |inds: &[Ind], proven_only: bool| -> Vec<(RelationId, String)> {
+                let mut v: Vec<(RelationId, String)> = inds
+                    .iter()
+                    .filter(|i| !proven_only || self.arena.assumptions(i.why).is_empty())
+                    .flat_map(|i| {
+                        i.pairs
+                            .iter()
+                            .filter(|(x, _)| *x == c)
+                            .map(|(_, n)| (i.relation.clone(), n.clone()))
+                    })
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            };
+            out.from.push(pick(&side.within, true));
+            out.covers.push(pick(&side.covers, false));
+        }
+        out
+    }
+
     fn match_proof(
         &mut self,
         (side, side_schema, side_name): (&RelationFacts, &DFSchema, &str),

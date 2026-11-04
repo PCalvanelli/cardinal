@@ -53,8 +53,9 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
     println!();
     match s.keys.first() {
         Some(k) => {
-            println!("grain   {}", names(&k.cols));
+            println!("key     {}", names(&k.cols));
             let why = match (&k.declared, k.why.is_empty()) {
+                (Some(cardinal_dbt::DeclOrigin::Guess(n)), true) => n.describe(),
                 (Some(origin), true) => {
                     if result.planned {
                         format!("declared, not proven: {} (G002)", origin.describe())
@@ -75,7 +76,7 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
                 .reason()
                 .map(|r| r.describe(&display))
                 .unwrap_or_default();
-            println!("grain   unknown");
+            println!("key     unknown");
             if !reason.is_empty() {
                 println!("        {reason}");
             }
@@ -104,7 +105,7 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
         .collect();
     let gw = grains.iter().map(|g| g.len()).max().unwrap_or(12).max(12) + 2;
     println!();
-    println!("{:<width$} {:<gw$} nulls", "column", "native grain");
+    println!("{:<width$} {:<gw$} nulls", "column", "one value per");
     for (c, col) in s.columns.iter().enumerate() {
         let nulls = if s.not_null.contains(&c) {
             "never"
@@ -112,6 +113,15 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
             "possible"
         };
         println!("{:<width$} {:<gw$} {nulls}", col.name, grains[c]);
+    }
+    let measures = measure_lines(s);
+    if !measures.is_empty() {
+        println!();
+        println!("adding up");
+        let w = measures.iter().map(|m| m.0.len()).max().unwrap_or(0) + 2;
+        for (col, text) in measures {
+            println!("  {col:<w$}{text}");
+        }
     }
     if !result.joins.is_empty() {
         println!();
@@ -201,6 +211,77 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
     0
 }
 
+/// What each column with a known measure kind or unit is, and how it may be added up, in
+/// plain words: "average — don't add up", "in units of currency".
+fn measure_lines(s: &cardinal_grain::RelationSummary) -> Vec<(String, String)> {
+    use cardinal_grain::{MeasureKind, MeasureSite};
+    let names = |cols: &[usize]| -> String {
+        cols.iter()
+            .map(|c| s.columns[*c].name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = Vec::new();
+    for (c, col) in s.columns.iter().enumerate() {
+        let mut parts = Vec::new();
+        if let Some(m) = s.measures.iter().find(|m| m.col == c) {
+            parts.push(match (&m.kind, &m.site) {
+                (MeasureKind::NonAdditive { .. }, MeasureSite::Distinct(d)) => {
+                    let across = if d.across.is_empty() {
+                        d.per.join(", ")
+                    } else {
+                        d.across.join(", ")
+                    };
+                    format!(
+                        "count of distinct {} — don't add across {across}",
+                        d.counted.join(", ")
+                    )
+                }
+                (MeasureKind::NonAdditive { .. }, MeasureSite::Computed { what, .. }) => {
+                    format!("{} — don't add up", what.label())
+                }
+                (MeasureKind::NonAdditive { .. }, _) => "can't be added — don't add up".into(),
+                (MeasureKind::Stock { over: None }, site) => {
+                    let (what, over) = match site {
+                        MeasureSite::Computed { what, over, .. } => (what.label(), over),
+                        MeasureSite::Declared { over, .. } => ("balance", over),
+                        MeasureSite::Distinct(_) => ("balance", &Vec::new()),
+                    };
+                    let over = over.join(", ");
+                    format!("{what} over {over}, which is no longer here — don't add up")
+                }
+                (MeasureKind::Stock { over: Some(over) }, MeasureSite::Computed { what, .. }) => {
+                    let over = names(&over.iter().copied().collect::<Vec<_>>());
+                    format!(
+                        "{} over {over} — don't add across {over} values",
+                        what.label()
+                    )
+                }
+                (MeasureKind::Stock { over: Some(over) }, _) => {
+                    let over = names(&over.iter().copied().collect::<Vec<_>>());
+                    format!("balance over {over} — don't add across {over} values")
+                }
+            });
+        }
+        if let Some(u) = s.units.iter().find(|u| u.col == c) {
+            parts.push(match &u.unit {
+                Some(x) if x.len() == 1 && s.columns[x[0]].name == u.site.unit => {
+                    format!("in units of {}", u.site.unit)
+                }
+                Some(x) => format!("in units of {} (set by {})", u.site.unit, names(x)),
+                None => format!(
+                    "in mixed units: {} was dropped, so don't add it up",
+                    u.site.unit
+                ),
+            });
+        }
+        if !parts.is_empty() {
+            out.push((col.name.clone(), parts.join("; ")));
+        }
+    }
+    out
+}
+
 /// "checked by test unique_orders_order_id" or "unchecked: declared by meta.cardinal.grain".
 pub fn status_line(project: &Project, a: &Assumption) -> String {
     let st = project.assumption_status(a);
@@ -213,14 +294,24 @@ pub fn status_line(project: &Project, a: &Assumption) -> String {
                 .collect::<Vec<_>>()
                 .join(" and ")
         )
-    } else if st.declared_by.is_empty() {
+    } else if st.checked_once() {
+        format!(
+            "checked once: {}, but that test is no longer in the project",
+            st.origin()
+        )
+    } else if st.declared_by.is_empty() && st.guessed.is_none() {
         "unchecked".to_string()
     } else {
-        format!("unchecked: declared by {}", st.declared_by.join(" and "))
+        format!("unchecked: {}", st.origin())
     };
+    if st.is_checked()
+        && let Some(g) = &st.guessed
+    {
+        line.push_str(&format!(" (Cardinal's guess, passed on {})", g.date));
+    }
     if !st.is_checked() {
         for c in &st.checked_by {
-            line.push_str(&format!("; {c} does not fail the build"));
+            line.push_str(&format!("; {}", cardinal_dbt::weak_check(c)));
         }
     }
     for c in &st.caveats {

@@ -1,9 +1,13 @@
 /target
 **/.cardinal/cache/
+**/.derive/
+fixtures/*/.user.yml
+.DS_Store
 fixtures/*/warehouse.duckdb*
 fixtures/*/logs/
 fixtures/*/target/*
 !fixtures/*/target/manifest.json
 !fixtures/*/target/catalog.json
+!fixtures/*/target/run_results.json
 *.snap.new
 *.pending-snap

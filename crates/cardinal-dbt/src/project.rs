@@ -1,6 +1,7 @@
 use crate::artifacts::{
     Catalog, ColumnInfo, KNOWN_MANIFEST_VERSIONS, Manifest, ManifestNode, NodeConfig,
 };
+use crate::guess::{GuessLog, GuessNote, GuessTest, Hypothesis};
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +37,8 @@ pub enum DeclOrigin {
     UniqueTest(String),
     UniqueCombination(String),
     SnapshotKey,
+    /// A key `cardinal guess` proposed and a dbt test confirmed on the data.
+    Guess(GuessNote),
 }
 
 impl DeclOrigin {
@@ -46,6 +49,10 @@ impl DeclOrigin {
             DeclOrigin::UniqueTest(t) => format!("test {t}"),
             DeclOrigin::UniqueCombination(t) => format!("test {t}"),
             DeclOrigin::SnapshotKey => "the snapshot's unique_key and dbt_valid_from".into(),
+            DeclOrigin::Guess(n) => format!(
+                "Cardinal's guess, which dbt test {} passed on {}",
+                n.test, n.date
+            ),
         }
     }
 }
@@ -90,6 +97,8 @@ pub enum NotNullOrigin {
     ContractPrimaryKey,
     /// meta.cardinal.grain declares a primary key: unique and non-null.
     MetaGrain,
+    /// A key guessed by `cardinal guess`, whose dbt test also checked for nulls.
+    Guess(GuessNote),
 }
 
 impl NotNullOrigin {
@@ -99,6 +108,10 @@ impl NotNullOrigin {
             NotNullOrigin::Contract => "a not_null contract constraint".into(),
             NotNullOrigin::ContractPrimaryKey => "a primary_key contract constraint".into(),
             NotNullOrigin::MetaGrain => "meta.cardinal.grain".into(),
+            NotNullOrigin::Guess(n) => format!(
+                "Cardinal's guess, which dbt test {} passed on {}",
+                n.test, n.date
+            ),
         }
     }
 }
@@ -113,6 +126,38 @@ pub struct DeclaredReference {
     pub to: RelationId,
     /// Lowercased, same length as `cols`.
     pub to_cols: Vec<String>,
+    /// Set when the reference is a guess a dbt test confirmed, not a declaration.
+    #[serde(default)]
+    pub guess: Option<GuessNote>,
+}
+
+/// How `meta.cardinal.measure` says a column may be added up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeasureDecl {
+    /// `kind: additive`: any sum is fine. Clears what Cardinal inferred.
+    Additive,
+    /// `kind: non_additive`: summing it over more than one row is wrong.
+    NonAdditive,
+    /// `kind: stock, over: [snapshot_date]`: summing rows that differ on `over` is wrong.
+    Stock { over: Vec<String> },
+}
+
+/// `meta.cardinal.measure` on a column.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredMeasure {
+    /// Lowercased.
+    pub column: String,
+    pub kind: MeasureDecl,
+}
+
+/// `meta.cardinal.unit` on a column: the column `unit` holds its unit, such as the
+/// currency of an amount.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredUnit {
+    /// Lowercased.
+    pub column: String,
+    /// Lowercased.
+    pub unit: String,
 }
 
 /// A dbt data test attached to a relation.
@@ -186,6 +231,10 @@ pub struct Relation {
     pub references: Vec<DeclaredReference>,
     /// From meta.cardinal.exactly_once.
     pub exactly_once: Vec<ExactlyOnce>,
+    /// From meta.cardinal.measure on columns.
+    pub measures: Vec<DeclaredMeasure>,
+    /// From meta.cardinal.unit on columns.
+    pub units: Vec<DeclaredUnit>,
     pub tests: Vec<DataTest>,
     /// `contract: {enforced: true}`, so the warehouse applies its constraints.
     pub contract_enforced: bool,
@@ -210,6 +259,8 @@ pub enum LoadWarning {
     UnknownAdapter(String),
     CycleIgnored(Vec<RelationId>),
     BadReference { relation: String, problem: String },
+    BadMeasure { relation: String, problem: String },
+    Guesses(String),
 }
 
 impl fmt::Display for LoadWarning {
@@ -243,6 +294,10 @@ impl fmt::Display for LoadWarning {
                 f,
                 "meta.cardinal.references on {relation} is ignored: {problem}"
             ),
+            LoadWarning::BadMeasure { relation, problem } => {
+                write!(f, "meta.cardinal on {relation} is ignored: {problem}")
+            }
+            LoadWarning::Guesses(m) => f.write_str(m),
         }
     }
 }
@@ -311,6 +366,12 @@ pub struct Project {
     /// Every 1-, 2- and 3-part suffix of each relation_name -> relations with it.
     name_index: HashMap<String, Vec<RelationId>>,
     pub manifest_mtime: Option<SystemTime>,
+    /// dbt's `test-paths`, relative to the root.
+    pub test_paths: Vec<String>,
+    /// Cardinal guess tests in the manifest.
+    pub guess_tests: Vec<GuessTest>,
+    /// `.cardinal/guesses.json`: what dbt found when it ran Cardinal's guesses.
+    pub guesses: GuessLog,
 }
 
 impl Project {
@@ -396,6 +457,7 @@ struct ProjectYml {
     name: String,
     target_path: String,
     model_paths: Vec<String>,
+    test_paths: Vec<String>,
 }
 
 fn read_project_yml(root: &Path) -> ProjectYml {
@@ -404,6 +466,7 @@ fn read_project_yml(root: &Path) -> ProjectYml {
         name: String::new(),
         target_path: "target".into(),
         model_paths: vec!["models".into()],
+        test_paths: vec!["tests".into()],
     };
     let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
     for line in text.lines() {
@@ -414,7 +477,9 @@ fn read_project_yml(root: &Path) -> ProjectYml {
             yml.name = unquote(v);
         } else if let Some(v) = line.strip_prefix("target-path:") {
             yml.target_path = unquote(v);
-        } else if let Some(v) = line.strip_prefix("model-paths:") {
+        } else if let Some((key, v)) = line.split_once(':')
+            && matches!(key, "model-paths" | "test-paths")
+        {
             let v = v.trim().trim_start_matches('[').trim_end_matches(']');
             let paths: Vec<String> = v
                 .split(',')
@@ -422,7 +487,11 @@ fn read_project_yml(root: &Path) -> ProjectYml {
                 .filter(|s| !s.is_empty())
                 .collect();
             if !paths.is_empty() {
-                yml.model_paths = paths;
+                if key == "model-paths" {
+                    yml.model_paths = paths;
+                } else {
+                    yml.test_paths = paths;
+                }
             }
         }
     }
@@ -590,7 +659,7 @@ fn constraint_facts(
     }
 }
 
-fn add_not_null(
+pub(crate) fn add_not_null(
     not_null: &mut BTreeMap<String, Vec<NotNullOrigin>>,
     col: String,
     origin: NotNullOrigin,
@@ -730,6 +799,105 @@ fn raw_references(
         }
     }
     out
+}
+
+/// Every meta.cardinal.measure and meta.cardinal.unit on a relation's columns. Names in
+/// `over` and `unit` must be columns of the relation when its columns are known.
+fn column_measures(
+    cols: &BTreeMap<String, ColumnInfo>,
+    columns: &[Column],
+    problems: &mut Vec<String>,
+) -> (Vec<DeclaredMeasure>, Vec<DeclaredUnit>) {
+    let known = |n: &str| columns.is_empty() || columns.iter().any(|c| c.name == n);
+    let mut measures = Vec::new();
+    let mut units = Vec::new();
+    for (k, info) in cols {
+        let name = info
+            .name
+            .clone()
+            .unwrap_or_else(|| k.clone())
+            .to_lowercase();
+        let cm = info.config.as_ref().and_then(|c| c.get("meta"));
+        let get =
+            |key: &str| cardinal_meta(info.meta.as_ref(), key).or_else(|| cardinal_meta(cm, key));
+        if let Some(v) = get("measure") {
+            match measure_decl(v) {
+                Ok(kind) => {
+                    let missing: Vec<&String> = match &kind {
+                        MeasureDecl::Stock { over } => over.iter().filter(|o| !known(o)).collect(),
+                        _ => vec![],
+                    };
+                    if missing.is_empty() {
+                        measures.push(DeclaredMeasure {
+                            column: name.clone(),
+                            kind,
+                        });
+                    } else {
+                        problems.push(format!(
+                            "column {name}: measure is over {}, which is not a column",
+                            missing
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                }
+                Err(e) => problems.push(format!("column {name}: measure {e}")),
+            }
+        }
+        if let Some(v) = get("unit") {
+            match v.as_str().and_then(plain_column) {
+                Some(unit) if known(&unit) => units.push(DeclaredUnit {
+                    column: name.clone(),
+                    unit,
+                }),
+                Some(unit) => problems.push(format!(
+                    "column {name}: its unit column {unit} is not a column"
+                )),
+                None => problems.push(format!(
+                    "column {name}: unit should name the column that holds its unit"
+                )),
+            }
+        }
+    }
+    (measures, units)
+}
+
+/// `non_additive`, `{kind: non_additive}`, or `{kind: stock, over: [col, …]}`.
+fn measure_decl(v: &Value) -> Result<MeasureDecl, String> {
+    let (kind, over) = match v {
+        Value::String(s) => (s.as_str(), None),
+        Value::Object(_) => (
+            v.get("kind")
+                .and_then(Value::as_str)
+                .ok_or("has no `kind`")?,
+            v.get("over"),
+        ),
+        _ => return Err("should be {kind: stock, over: [...]} or {kind: non_additive}".into()),
+    };
+    match kind.to_ascii_lowercase().replace('-', "_").as_str() {
+        "additive" => Ok(MeasureDecl::Additive),
+        "non_additive" | "nonadditive" => Ok(MeasureDecl::NonAdditive),
+        "stock" | "semi_additive" | "balance" => {
+            let over: Vec<String> = over
+                .map(string_list)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|s| plain_column(s))
+                .collect();
+            if over.is_empty() {
+                Err(format!(
+                    "kind {kind} needs `over`: the columns it can't be added across, such as a snapshot date"
+                ))
+            } else {
+                Ok(MeasureDecl::Stock { over })
+            }
+        }
+        other => Err(format!(
+            "kind `{other}` is unknown (expected stock, non_additive or additive)"
+        )),
+    }
 }
 
 fn exactly_once_names(meta: Option<&Value>, config_meta: Option<&Value>) -> Vec<String> {
@@ -873,6 +1041,7 @@ fn resolve_references(
                 cols: r.cols.clone(),
                 to,
                 to_cols,
+                guess: None,
             };
             if !resolved.contains(&d) {
                 resolved.push(d);
@@ -913,16 +1082,58 @@ pub fn load_project(root: &Path) -> Result<Project, LoadError> {
             }
         }
     }
-    let manifest: Manifest = read_json(&manifest_path)?;
     let mut warnings = Vec::new();
     let catalog_path = target_dir.join("catalog.json");
-    let catalog: Catalog = if catalog_path.is_file() {
-        read_json(&catalog_path)?
-    } else {
+    if !catalog_path.is_file() {
         warnings.push(LoadWarning::MissingCatalog {
             command: "dbt docs generate".into(),
         });
-        Catalog::default()
+    }
+    let mut project = load_artifacts(root, &yml, &target_dir, &[catalog_path], warnings)?;
+    project.manifest_mtime = manifest_mtime;
+    if let Err(e) = project.record_guess_results() {
+        project.warnings.push(LoadWarning::Guesses(format!(
+            "could not record guess results: {e}"
+        )));
+    }
+    project.apply_guesses();
+    Ok(project)
+}
+
+/// Load another build of the same project from `dir`, such as the base branch's
+/// artifacts that slim CI downloads for `--state`: `dir/manifest.json`, with
+/// `dir/catalog.json` when it exists and the project's own catalog otherwise, since
+/// source columns rarely change. Never checks whether the artifacts are stale.
+pub fn load_state(root: &Path, dir: &Path) -> Result<Project, LoadError> {
+    let yml = read_project_yml(root);
+    let manifest_path = dir.join("manifest.json");
+    if !manifest_path.is_file() {
+        return Err(LoadError::MissingArtifact {
+            path: manifest_path,
+            command: "download the base branch's target/manifest.json into this directory".into(),
+        });
+    }
+    let catalogs = [
+        dir.join("catalog.json"),
+        root.join(&yml.target_path).join("catalog.json"),
+    ];
+    let mut project = load_artifacts(root, &yml, dir, &catalogs, vec![])?;
+    project.apply_guesses();
+    Ok(project)
+}
+
+/// Read `target_dir/manifest.json` and the first catalog in `catalogs` that exists.
+fn load_artifacts(
+    root: &Path,
+    yml: &ProjectYml,
+    target_dir: &Path,
+    catalogs: &[PathBuf],
+    mut warnings: Vec<LoadWarning>,
+) -> Result<Project, LoadError> {
+    let manifest: Manifest = read_json(&target_dir.join("manifest.json"))?;
+    let catalog: Catalog = match catalogs.iter().find(|p| p.is_file()) {
+        Some(p) => read_json(p)?,
+        None => Catalog::default(),
     };
     if let Some(v) = &manifest.metadata.dbt_schema_version {
         let ver = v
@@ -940,16 +1151,15 @@ pub fn load_project(root: &Path) -> Result<Project, LoadError> {
         .clone()
         .unwrap_or_else(|| "generic".into());
     let mut project = build(
-        root,
-        &target_dir,
-        &yml,
-        &manifest,
-        &catalog,
-        adapter,
-        warnings,
+        root, target_dir, yml, &manifest, &catalog, adapter, warnings,
     );
-    project.manifest_mtime = manifest_mtime;
     project.dbt_version = manifest.metadata.dbt_version.clone();
+    match GuessLog::load(root) {
+        Ok(g) => project.guesses = g,
+        Err(e) => project.warnings.push(LoadWarning::Guesses(format!(
+            "ignoring Cardinal's recorded guesses: {e}"
+        ))),
+    }
     Ok(project)
 }
 
@@ -1016,6 +1226,14 @@ fn build(
                 problem: p,
             });
         }
+        let mut problems = Vec::new();
+        let (measures, units) = column_measures(&s.columns, &columns, &mut problems);
+        for p in problems {
+            warnings.push(LoadWarning::BadMeasure {
+                relation: display.clone(),
+                problem: p,
+            });
+        }
         if !refs.is_empty() {
             raw_refs.insert(RelationId(id.clone()), refs);
         }
@@ -1042,6 +1260,8 @@ fn build(
                 not_null,
                 references: vec![],
                 exactly_once: vec![],
+                measures,
+                units,
                 tests: vec![],
                 contract_enforced: false,
                 tags: vec![],
@@ -1089,6 +1309,14 @@ fn build(
         );
         for p in problems {
             warnings.push(LoadWarning::BadReference {
+                relation: n.name.clone(),
+                problem: p,
+            });
+        }
+        let mut problems = Vec::new();
+        let (measures, units) = column_measures(&n.columns, &columns, &mut problems);
+        for p in problems {
+            warnings.push(LoadWarning::BadMeasure {
                 relation: n.name.clone(),
                 problem: p,
             });
@@ -1168,6 +1396,8 @@ fn build(
                 not_null,
                 references: vec![],
                 exactly_once: vec![],
+                measures,
+                units,
                 tests: vec![],
                 contract_enforced,
                 tags: n.tags.clone(),
@@ -1177,12 +1407,17 @@ fn build(
     }
 
     // Tests become declared facts on the node they are attached to.
+    let mut guess_tests = Vec::new();
     for n in manifest
         .nodes
         .values()
         .filter(|n| n.resource_type == "test")
     {
-        attach_test(n, &mut relations);
+        if let Some(t) = attach_guess_test(n, &mut relations) {
+            guess_tests.push(t);
+        } else {
+            attach_test(n, &mut relations);
+        }
     }
     resolve_references(&mut relations, raw_refs, &mut warnings);
     for (id, names) in raw_exactly_once {
@@ -1245,7 +1480,58 @@ fn build(
         warnings,
         name_index,
         manifest_mtime: None,
+        test_paths: yml.test_paths.clone(),
+        guess_tests,
+        guesses: GuessLog::default(),
     }
+}
+
+/// A Cardinal guess test: it checks its hypothesis like any data test of that fact, but
+/// declares nothing; only a recorded pass does (see `Project::apply_guesses`).
+fn attach_guess_test(
+    n: &ManifestNode,
+    relations: &mut BTreeMap<RelationId, Relation>,
+) -> Option<GuessTest> {
+    let h = Hypothesis::from_meta(n.config.meta.as_ref())
+        .or_else(|| Hypothesis::from_meta(n.meta.as_ref()))?;
+    let warn_only = n
+        .config
+        .severity
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("warn"));
+    let test = |kind| DataTest {
+        name: n.name.clone(),
+        kind,
+        filtered: false,
+        warn_only,
+    };
+    if let Some(rel) = relations.get_mut(h.relation()) {
+        match &h {
+            Hypothesis::Key { columns, .. } => {
+                rel.tests.push(test(TestKind::Unique(columns.clone())));
+                for c in columns {
+                    rel.tests.push(test(TestKind::NotNull(c.clone())));
+                }
+            }
+            Hypothesis::References {
+                columns,
+                to,
+                to_columns,
+                ..
+            } if columns.len() == 1 => rel.tests.push(test(TestKind::Relationships {
+                column: columns[0].clone(),
+                to: to.clone(),
+                field: to_columns[0].clone(),
+            })),
+            Hypothesis::References { .. } => {}
+        }
+    }
+    Some(GuessTest {
+        unique_id: n.unique_id.clone(),
+        name: n.name.clone(),
+        file: n.original_file_path.clone(),
+        hypothesis: h,
+    })
 }
 
 fn cardinal_sql_adapters() -> &'static [&'static str] {

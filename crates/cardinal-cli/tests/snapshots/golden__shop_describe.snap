@@ -4,10 +4,10 @@ expression: out
 ---
 model.shop.order_lines  (models/intermediate/order_lines.sql)
 
-grain   (order_id, line_id)
-        proven: one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain
+key     (order_id, line_id)
+        proven: one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)
 
-column         native grain          nulls
+column         one value per         nulls
 order_id       (order_id)            never
 line_id        (order_id, line_id)   never
 customer_id    (order_id)            possible

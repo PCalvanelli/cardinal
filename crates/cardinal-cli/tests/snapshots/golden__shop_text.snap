@@ -8,8 +8,8 @@ warning[G003]: many-to-many join
 5 | join {{ source('shop', 'promos') }} p on o.customer_id = p.customer_id
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ neither stg_orders (customer_id) nor shop.promos (customer_id) is unique
   |
-  = note: stg_orders has grain (order_id)
-  = note: shop.promos has grain (customer_id, promo_code)
+  = note: stg_orders has one row per (order_id)
+  = note: shop.promos has one row per (customer_id, promo_code)
   = note: every pair of matching rows becomes one output row
   = help: reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)
   = see: cardinal explain G003
@@ -23,11 +23,11 @@ warning[G005]: suppression matches no finding
   = help: remove the comment
   = see: cardinal explain G005
 
-warning[G008]: distinct count is summed
+warning[G008]: adds up a number that can't be added
  --> models/marts/customers_to_date.sql:3:5
   |
 3 |     sum(active_customers) over (order by order_date) as customers_to_date
-  |     ^^^^^^^^^^^^^^^^^^^^^ adds up counts of distinct customer_id across order_date
+  |     ^^^^^^^^^^^^^^^^^^^^^ adds up distinct counts of customer_id across order_date
   |
  ::: models/marts/daily_active_customers.sql:3:5
   |
@@ -38,35 +38,35 @@ warning[G008]: distinct count is summed
   = help: count each customer_id once, on its first order_date, and sum those instead
   = see: cardinal explain G008
 
-error[G001]: aggregation fans out
+error[G001]: a join repeats values that are then added up
  --> models/marts/daily_revenue.sql:4:24
   |
 4 |     sum(line_amount) + sum(shipping_fee) as revenue
-  |                        ^^^^^^^^^^^^^^^^^ shipping_fee is determined by (order_id)
+  |                        ^^^^^^^^^^^^^^^^^ shipping_fee has one value per (order_id)
   |
  ::: models/intermediate/order_lines.sql:9:1
   |
 9 | join {{ ref('int_order_items') }} i using (order_id)
   | ---------------------------------------------------- one-to-many: rows repeat per row of int_order_items
   |
-  = note: order_lines has grain (order_id, line_id), proven: one-to-many join on order_id; key of shop.order_items from meta.cardinal.grain
-  = help: sum shipping_fee per (order_id) before the join, or read it from a relation at that grain
+  = note: order_lines has one row per (order_id, line_id): one-to-many join on order_id; key of shop.order_items (meta.cardinal.grain)
+  = help: sum shipping_fee per (order_id) before the join, or read it from a table with one row per (order_id)
   = see: cardinal explain G001
 
-warning[G002]: declared key (customer_id) is not proven by the SQL
+warning[G002]: declared key (customer_id) isn't guaranteed by the SQL
  --> models/marts/latest_order.sql
   |
-  = the SQL proves grain (order_id)
+  = the SQL guarantees one row per (order_id)
   |
-  = note: test unique_latest_order_customer_id remains the only guarantee
-  = help: declare grain on the upstream sources (meta.cardinal.grain), or make the SQL produce one row per key, e.g. GROUP BY or a row_number() dedup
+  = note: only test unique_latest_order_customer_id checks it
+  = help: declare the keys of the tables it reads (meta.cardinal.grain), or make the SQL return one row per key, e.g. with GROUP BY or a row_number() dedup
   = see: cardinal explain G002
 
-warning[G008]: distinct count is summed
+warning[G008]: adds up a number that can't be added
  --> models/marts/monthly_active_customers.sql:3:5
   |
 3 |     sum(active_customers) as active_customers,
-  |     ^^^^^^^^^^^^^^^^^^^^^ adds up counts of distinct customer_id across order_date
+  |     ^^^^^^^^^^^^^^^^^^^^^ adds up distinct counts of customer_id across order_date
   |
  ::: models/marts/daily_active_customers.sql:3:5
   |
@@ -77,14 +77,13 @@ warning[G008]: distinct count is summed
   = help: count distinct customer_id per (date_trunc('month', order_date)) from the rows before they are grouped by (order_date)
   = see: cardinal explain G008
 
-info[G004]: grain unknown for 1 model: source shop.events declares no key
+info[G004]: can't check 1 model: source shop.events has no known key
  --> models/sources.yml
   |
   = note: affects order_events
-  = note: shop.events declares no key
-  = help: declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test
+  = help: declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess
   = see: cardinal explain G004
 
-Analyzed 15 models in <time>: 14 with known grain (93%).
+Analyzed 15 models in <time>: 14 with a known key (93%).
 Findings: 1 error, 5 warnings, 1 info (G001 ×1, G002 ×1, G003 ×1, G004 ×1, G005 ×1, G008 ×2); 1 suppressed.
-Next: declare grain on 1 source to cover 1 more model: shop.events (see cardinal coverage).
+Next: 1 source without a known key keeps 1 model from being checked: shop.events. Run cardinal guess so dbt can test likely keys, or declare it (see cardinal coverage).

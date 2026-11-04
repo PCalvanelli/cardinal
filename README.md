@@ -13,72 +13,115 @@
   <img src="https://img.shields.io/badge/built%20for-dbt-FF694B?logo=dbt&logoColor=white" alt="Built for dbt">
 </p>
 
-> **Beta (v0.1.0-beta.3).** Output, flags and config may change between beta releases.
+> **Beta (v0.1.0-beta.4).** Output, flags and config may change between beta releases.
 
-Cardinal checks that your dbt models count every row correctly. It reads the SQL dbt
-compiles and finds three kinds of miscount before any data moves:
+Cardinal reads the SQL that dbt compiles and tells you, before anything runs, where a
+model can count a row twice, lose a row, or add up numbers that don't add up. It never
+connects to your warehouse.
 
-- **Repeated:** a join fans out and inflates a sum.
-- **Dropped:** an inner join or filter silently loses rows.
-- **Double-added:** counts that overlap get summed, like daily active users added up
-  into a monthly figure.
+```
+error[G001]: a join repeats values that are then added up
+ --> models/marts/daily_revenue.sql:4:24
+  |
+4 |     sum(line_amount) + sum(shipping_fee) as revenue
+  |                        ^^^^^^^^^^^^^^^^^ shipping_fee has one value per (order_id)
+  |
+ ::: models/intermediate/order_lines.sql:9:1
+  |
+9 | join {{ ref('int_order_items') }} i using (order_id)
+  | ---------------------------------------------------- one-to-many: rows repeat per row of int_order_items
+  |
+  = help: sum shipping_fee per (order_id) before the join, or read it from a table with one row per (order_id)
+```
 
-It never connects to your warehouse.
+`order_lines` has one row per order line, but each order has one shipping fee. The join
+copies the fee onto every line, so the sum counts it once per line.
 
-Cardinal checks structure, not meaning. It can tell you revenue counts each order once.
-It can't tell you whether revenue should include refunds.
+Cardinal checks structure, not meaning: it can tell you revenue counts each order once,
+not whether revenue should include refunds.
 
 ## Get started
 
-Install once. Cardinal builds from source for now, and the first build takes a few
-minutes:
+Install (builds from source; the first build takes a few minutes):
 
 ```sh
 git clone https://github.com/PCalvanelli/cardinal
 cd cardinal && cargo install --path crates/cardinal-cli
 ```
 
-Then, in your dbt project:
+In your dbt project:
 
 ```sh
 dbt compile && dbt docs generate   # writes target/manifest.json and target/catalog.json
 cardinal check
 ```
 
-Cardinal itself runs in about a second, even on a project with a thousand models. The
-dbt commands take as long as they usually do on your project.
-
-### What to expect
-
-On a first run, expect a short report that ends like this. Your models and numbers will
-differ:
+Cardinal takes about a second, even on a thousand models. The first run usually ends
+like this:
 
 ```
-warning[G003]: many-to-many join
- --> models/marts/customer_promos.sql:5:1
-  |
-5 | join {{ source('shop', 'promos') }} p on o.customer_id = p.customer_id
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ neither stg_orders (customer_id) nor shop.promos (customer_id) is unique
-  |
-  = help: reduce shop.promos to one row per (customer_id) before joining, or join on its full key (customer_id, promo_code)
-
-Analyzed 214 models in 0.41s: 38 with known grain (18%).
+Analyzed 214 models in 0.41s: 38 with a known key (18%).
 Findings: 0 errors, 1 warning (G003 ×1).
-Next: declare grain on 3 sources to cover 97 more models: app.orders, app.users, stripe.charges (see cardinal coverage).
+Next: 3 sources without a known key keep 97 models from being checked: app.orders, app.users, stripe.charges. Run cardinal guess so dbt can test likely keys, or declare them (see cardinal coverage).
 ```
 
-Expect three things:
+- **Few findings at first.** Cardinal needs to know each table's **key**: the columns
+  that identify one row, such as one row per `order_id`. It learns keys from your
+  `unique` tests and the declarations below. Where it doesn't know a key, it stays quiet
+  rather than guess.
+- **The `Next:` line** names the keys that would let Cardinal check the most models.
+- **Only errors fail the run.** Warnings don't, so you can add Cardinal to an existing
+  project without breaking anything.
 
-- **Few findings at first.** Cardinal can only reason about a model once it knows the key
-  of the tables it reads. It learns keys from your `unique` tests and from the
-  declarations below. If a model's grain is unknown, Cardinal reports nothing for it
-  rather than guessing.
-- **A `Next:` line.** It names the sources whose keys would unlock the most models. Add
-  those keys first.
-- **Exit code 1 only for errors.** Warnings don't fail the run, so you can run Cardinal
-  on an existing project without breaking anything.
+| Exit code | Meaning |
+| --- | --- |
+| 0 | No errors (warnings may be shown) |
+| 1 | At least one error |
+| 2 | Cardinal couldn't run, for example with no manifest |
 
-Then add the keys it asks for:
+Other commands:
+
+| Command | What it shows |
+| --- | --- |
+| `cardinal describe MODEL` | A model's key, what each column belongs to, its joins, and whether it keeps each parent's rows exactly once |
+| `cardinal explain G001` | What a finding means, with a broken and a fixed query |
+| `cardinal coverage` | Which keys to declare next |
+| `cardinal guess` | Likely keys, written as dbt tests for dbt to check |
+| `cardinal assumptions` | The facts Cardinal takes on trust, and whether a dbt test checks each one |
+
+## Add it to CI
+
+Compare each pull request with main. If you use dbt's Slim CI, you already download
+main's artifacts for `state:modified`; point Cardinal at the same directory:
+
+```sh
+dbt compile && dbt docs generate
+cardinal check --state prod-artifacts/   # or set DBT_STATE
+```
+
+Whatever Cardinal proves on main becomes a check, with nothing to declare. If a model
+kept each order exactly once on main, or had one row per `order_id`, and the branch
+breaks that, the run fails with P003. Findings main already has don't fail the run:
+
+```
+Compared with main (state: prod-artifacts/): 1 guarantee lost, 2 gained, 41 kept; 3 findings already on main, not shown.
+```
+
+The directory needs main's `manifest.json`; `catalog.json` is optional.
+
+Without main's artifacts, commit a baseline of today's findings instead, and CI fails
+only on new ones:
+
+```sh
+cardinal check --update-baseline                   # writes .cardinal/baseline.json
+cardinal check --baseline .cardinal/baseline.json  # in CI
+```
+
+Add `--format sarif --output cardinal.sarif` for GitHub code scanning, or `--format json`.
+
+## Telling Cardinal what you know
+
+Everything goes under `meta.cardinal` in your dbt YAML. The most useful one is a key:
 
 ```yaml
 sources:
@@ -87,56 +130,38 @@ sources:
       - name: orders
         meta:
           cardinal:
-            grain: [order_id]     # one row per order_id
+            grain: [order_id]     # one row per order_id; also means order_id is never null
 ```
 
-Run `dbt compile && cardinal check` again, and Cardinal checks every model that reads
-`app.orders`.
-
-### Useful next commands
-
-| Command | What it shows |
+| Setting | What it tells Cardinal |
 | --- | --- |
-| `cardinal describe MODEL` | The model's grain, what each column belongs to, its joins, and whether it keeps each parent's rows exactly once |
-| `cardinal explain G001` | What a finding means, with a broken and a fixed query |
-| `cardinal coverage` | Which sources to declare keys on next |
-| `cardinal assumptions` | The facts Cardinal took on trust, and whether a dbt test checks each one |
+| `grain` | The columns that identify one row (also read from `unique` tests and `primary_key` constraints) |
+| `references` | Every value has a match in another table, so an inner join drops nothing |
+| `exactly_once` | This model must keep every row of another model exactly once (P001 if unproven) |
+| `measure` | A column can't be added up at all, or not across dates |
+| `unit` | The column holding an amount's currency or unit |
+
+Don't know a key? `cardinal guess` writes likely keys as dbt tests, and the ones dbt
+passes start counting. See [docs/configuration.md](docs/configuration.md) for examples
+of each setting.
 
 ## What it finds
 
-The main error is a sum that counts a value more than once:
-
-```
-error[G001]: aggregation fans out
- --> models/marts/daily_revenue.sql:4:24
-  |
-4 |     sum(line_amount) + sum(shipping_fee) as revenue
-  |                        ^^^^^^^^^^^^^^^^^ shipping_fee is determined by (order_id)
-  |
- ::: models/intermediate/order_lines.sql:9:1
-  |
-9 | join {{ ref('int_order_items') }} i using (order_id)
-  | ---------------------------------------------------- one-to-many: rows repeat per row of int_order_items
-  |
-  = help: sum shipping_fee per (order_id) before the join, or read it from a relation at that grain
-```
-
-`order_lines` has one row per order line, but `shipping_fee` belongs to the order. Each
-fee repeats on every line of its order, so summing it counts the fee once per line.
-
 | Code | Default | Finds |
 | --- | --- | --- |
-| G001 | error | A sum or count that counts a value more than once because a join repeated it |
+| G001 | error | A join repeats a value, and a sum or count then adds it more than once |
 | G002 | warning | A declared key that the SQL doesn't guarantee |
 | G003 | warning | A many-to-many join |
-| G004 | info | Models whose grain is unknown, grouped by cause |
+| G004 | info | Models Cardinal can't check because a key is unknown, grouped by cause |
 | G005 | warning | A suppression comment that no longer matches anything |
 | G006 | warning | An incremental model whose `unique_key` isn't unique |
-| G007 | warning | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is arbitrary |
-| G008 | warning | A sum of distinct counts that can overlap, such as daily active users summed into monthly ones |
+| G007 | warning | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is random |
+| G008 | warning | Adds up a number that can't be added: overlapping distinct counts (daily active users summed into monthly), averages, ratios, percentiles, or balances and running totals across dates |
+| G009 | error | Adds amounts in different units, such as `amount` across currencies (needs `unit`) |
 | P001 | error | An `exactly_once` contract that isn't proven |
 | P002 | warning | A proven contract that relies on something no test checks |
-| E001–E005 | error | SQL Cardinal could not read (missing, unparseable or unsupported) |
+| P003 | error | A guarantee main has that the branch loses (with `--state`) |
+| E001–E005 | error | SQL Cardinal couldn't read (missing, unparseable or unsupported) |
 
 To silence one finding, add a comment with a reason:
 
@@ -146,101 +171,14 @@ sum(shipping_fee) as shipping  -- cardinal: allow(G001) reason: fee is allocated
 
 ## How it works
 
-Cardinal is a static analyzer that proves **summarizability** for a dbt DAG: no row is
-duplicated, no row is lost, and nothing non-additive gets summed. It does this by
-inferring keys and functional and inclusion dependencies through every query, model by
-model.
-
 Cardinal doesn't run your SQL against data. It runs it against facts about the data:
-which columns form a key, which columns determine others, which columns are never null,
-and which rows are guaranteed to have a match in another relation. These facts start
-from your dbt tests and `meta.cardinal` declarations on sources. Every join, filter,
-aggregate and window then updates them, and they carry over from each model to the
-models that read it.
+which columns identify a row, which columns belong to which entity, which are never null,
+which rows are sure to find a match, and which numbers can't be added. The facts start
+from your dbt tests and `meta.cardinal` declarations. Every join, filter, aggregate and
+window updates them, and they flow from each model to the models that read it.
 
 A finding means the facts can't rule a miscount out. A proof means it can't happen on
-any data that passes the tests it rests on. `cardinal assumptions` lists those tests.
-
-Observability tools catch bad numbers after they land. Cardinal checks the logic that
-produces them, in CI, before the model runs.
-
-## Add it to CI
-
-Record today's findings so CI fails only on new ones:
-
-```sh
-cardinal check --update-baseline                   # writes .cardinal/baseline.json; commit it
-cardinal check --baseline .cardinal/baseline.json  # in CI
-```
-
-Exit codes: 0 when there are no errors, 1 when there is at least one, 2 when Cardinal
-itself couldn't run (for example, no manifest). Add `--format sarif --output
-cardinal.sarif` for GitHub code scanning, or `--format json` for other tools.
-
-## Telling Cardinal what you know
-
-### Keys
-
-Cardinal reads a table's key from `meta.cardinal.grain`, a `primary_key` constraint, a
-`unique` test, or `dbt_utils.unique_combination_of_columns`. A `grain` is a primary key,
-so its columns are also taken as non-null. A test with a `where` filter only covers some
-rows, so Cardinal ignores it.
-
-### References
-
-An inner join drops rows that have no match. To show that every row matches, declare
-that a column's values all exist in another table:
-
-```yaml
-sources:
-  - name: shop
-    tables:
-      - name: orders
-        columns:
-          - name: customer_id
-            tests: [not_null]
-            meta:
-              cardinal:
-                references: shop.customers    # or shop.customers.id, or {to: shop.customers, column: id}
-```
-
-For several columns, use a list on the table:
-`references: [{columns: [a, b], to: "source('shop', 'x')", to_columns: [a, b]}]`.
-
-Cardinal doesn't treat dbt `relationships` tests as declarations. A test only shows that
-a declared reference is checked when dbt runs.
-
-### Exactly-once contracts
-
-Declare that a model contains every row of another relation exactly once:
-
-```yaml
-models:
-  - name: orders_enriched
-    meta:
-      cardinal:
-        exactly_once: stg_orders    # or a list; write sources as source_name.table_name
-```
-
-Cardinal reports P001 unless it can prove both halves. **At least once** means no filter,
-`LIMIT` or join drops a row. **At most once** means no join repeats a row. If the model
-aggregates, Cardinal checks the rows that feed the aggregate. If Cardinal can't prove the
-contract, P001 fails it, the way a type checker rejects code it can't verify.
-
-### Assumptions
-
-Every proof starts from facts Cardinal takes on trust: the keys, non-null columns and
-references you declared. `cardinal assumptions` lists each one, which models rely on it,
-and whether a dbt test (or an enforced constraint) checks it:
-
-```
-UNCHECKED  shop.order_items.order_id references shop.orders.order_id
-           declared by meta.cardinal.references
-           used by daily_revenue, order_lines
-```
-
-`cardinal assumptions --emit-tests` prints the dbt tests to add. With those tests running,
-dbt checks your sources and Cardinal proves everything built from them.
+any data that passes the tests it relies on.
 
 ## Development
 
@@ -251,20 +189,7 @@ cargo test --release -p cardinal-cli --test speed -- --ignored  # speed targets
 cargo xtask fixtures                                            # rebuild fixture artifacts (needs dbt-duckdb and duckdb)
 ```
 
-`fixtures/` holds small dbt projects with their compiled artifacts checked in, so you can
-try Cardinal without dbt: `CARDINAL_ALLOW_STALE=1 cardinal check --project-dir
-fixtures/shop`. `docs/explain/` has one page per finding code.
-
-```
-crates/
-  cardinal-cli/     commands, flags, the analysis engine
-  cardinal-dbt/     reads manifest and catalog: models, declarations, tests, assumptions
-  cardinal-sql/     SQL dialects and planning
-  cardinal-grain/   the analysis: keys, inclusion facts, exactly-once verdicts
-  cardinal-check/   the checks (G, P and E codes)
-  cardinal-diag/    findings, rendering, baseline, suppressions
-  cardinal-cache/   fact cache under .cardinal/cache
-```
-
-The toolchain is pinned to Rust 1.94 by `rust-toolchain.toml`, and DataFusion to
-`=55.2.0`.
+`fixtures/` holds small dbt projects with compiled artifacts checked in, so you can try
+Cardinal without dbt: `CARDINAL_ALLOW_STALE=1 cardinal check --project-dir fixtures/shop`.
+`docs/explain/` has one page per finding code. The toolchain is pinned to Rust 1.94, and
+DataFusion to `=55.2.0`.

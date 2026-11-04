@@ -157,12 +157,14 @@ fn summary_round_trips_through_json() {
         per: vec!["event_date".into()],
         across: vec!["event_date".into()],
     };
-    let s = cardinal_grain::SummaryDistinct {
+    let s = cardinal_grain::SummaryMeasure {
         col: 1,
-        agree_on: vec![],
-        site,
+        kind: cardinal_grain::MeasureKind::NonAdditive {
+            agree_on: Default::default(),
+        },
+        site: cardinal_grain::MeasureSite::Distinct(site),
     };
-    let back: cardinal_grain::SummaryDistinct =
+    let back: cardinal_grain::SummaryMeasure =
         serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
     assert_eq!(back, s);
 }

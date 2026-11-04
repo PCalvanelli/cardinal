@@ -8,8 +8,8 @@ use cardinal_dbt::{Kind, Project, Relation, RelationId};
 use cardinal_diag::sourcemap::SourceMap;
 use cardinal_diag::{Diagnostic, Label};
 use cardinal_grain::{
-    AnalyzedModel, Cardinality, GrainStatus, RelationSummary, UnknownReason, UpstreamFacts,
-    Verdict, analyze, summarize, summary_from_declared, verdict,
+    AnalyzedModel, Cardinality, GrainStatus, JoinSide, RelationSummary, UnknownReason,
+    UpstreamFacts, Verdict, analyze, summarize, summary_from_declared, verdict,
 };
 use cardinal_sql::provider::{Functions, TableLookup};
 use cardinal_sql::sqlparser::dialect::Dialect;
@@ -26,6 +26,9 @@ pub struct JoinSummary {
     pub right: String,
     pub on: Vec<String>,
     pub cardinality: Option<Cardinality>,
+    /// Lineage of each side's join columns, for `cardinal guess`: left, then right.
+    #[serde(default)]
+    pub sides: Vec<JoinSide>,
 }
 
 /// Everything later stages need from one relation; this is what the cache stores.
@@ -41,6 +44,9 @@ pub struct ModelResult {
     pub planned: bool,
     #[serde(skip)]
     pub from_cache: bool,
+    /// The cache key it was computed under; empty when nothing was planned.
+    #[serde(skip)]
+    pub cache_key: String,
 }
 
 pub struct RunResult {
@@ -55,6 +61,11 @@ pub struct Engine<'a> {
     pub dialect: Box<dyn Dialect + Send + Sync>,
     pub cache: Cache,
     config_fingerprint: String,
+    /// Prefix for cache entries, so a second build of the project keeps its own.
+    cache_prefix: &'static str,
+    /// Results to reuse where the cache key matches: the head's, when analyzing the
+    /// base branch's artifacts, which mostly hold the same models.
+    reuse: Option<&'a BTreeMap<RelationId, ModelResult>>,
 }
 
 struct Lookup<'a> {
@@ -141,6 +152,24 @@ impl<'a> Engine<'a> {
                 config.analysis_fingerprint(),
                 build_id()
             ),
+            cache_prefix: "",
+            reuse: None,
+        }
+    }
+
+    /// An engine for the base branch's artifacts (`--state`). It reuses the head's
+    /// results for models whose SQL and inputs are unchanged, and caches the others
+    /// apart from the head's, so neither evicts the other.
+    pub fn for_state(
+        project: &'a Project,
+        config: &Config,
+        use_cache: bool,
+        head: &'a RunResult,
+    ) -> Self {
+        Engine {
+            cache_prefix: "state:",
+            reuse: Some(&head.results),
+            ..Engine::new(project, config, use_cache)
         }
     }
 
@@ -199,6 +228,7 @@ impl<'a> Engine<'a> {
             verdicts: vec![],
             planned: false,
             from_cache: false,
+            cache_key: String::new(),
         };
         match rel.kind {
             Kind::Source | Kind::Seed | Kind::Snapshot => {
@@ -219,8 +249,18 @@ impl<'a> Engine<'a> {
             );
         };
         let key = self.cache_key(rel, done);
-        if let Some(mut hit) = self.cache.get::<ModelResult>(&rel.id.0, &key) {
+        if let Some(prev) = self.reuse.and_then(|r| r.get(&rel.id))
+            && prev.cache_key == key
+        {
+            return ModelResult {
+                from_cache: true,
+                ..prev.clone()
+            };
+        }
+        let cache_id = format!("{}{}", self.cache_prefix, rel.id.0);
+        if let Some(mut hit) = self.cache.get::<ModelResult>(&cache_id, &key) {
             hit.from_cache = true;
+            hit.cache_key = key;
             return hit;
         }
         let lookup = Lookup {
@@ -269,6 +309,7 @@ impl<'a> Engine<'a> {
                         right: j.right.clone(),
                         on: j.on_left.clone(),
                         cardinality: j.cardinality,
+                        sides: j.sides.to_vec(),
                     })
                     .collect();
                 ModelResult {
@@ -278,11 +319,15 @@ impl<'a> Engine<'a> {
                     verdicts,
                     planned: true,
                     from_cache: false,
+                    cache_key: String::new(),
                 }
             }
         };
-        self.cache.put(&rel.id.0, &key, &result);
-        result
+        self.cache.put(&cache_id, &key, &result);
+        ModelResult {
+            cache_key: key,
+            ..result
+        }
     }
 }
 

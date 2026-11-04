@@ -3,6 +3,7 @@ pub mod check;
 pub mod coverage;
 pub mod describe;
 pub mod explain;
+pub mod guess;
 pub mod init;
 pub mod watch;
 

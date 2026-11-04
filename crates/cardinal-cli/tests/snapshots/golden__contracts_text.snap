@@ -8,31 +8,31 @@ error[P001]: rows of stg_orders may be dropped
 3 | where status = 'completed'
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^ rows of stg_orders may be dropped here
   |
-  = note: at least once: not proven: filter `where status = 'completed'` in completed_orders may drop rows
+  = note: at least once: not proven, since filter `where status = 'completed'` in completed_orders may drop rows
   = note: at most once: proven
   = help: if dropping these rows is intended, the model does not contain every row of stg_orders: remove it from exactly_once
   = see: cardinal explain P001
 
-warning[P002]: exactly once over shop.order_items rests on 4 unchecked assumptions
+warning[P002]: exactly_once of shop.order_items rests on 4 unchecked assumptions
  --> models/marts/daily_revenue.sql
   |
   = proven, if these hold
   |
   = note: key (order_id, line_id) of shop.order_items (declared by meta.cardinal.grain): unchecked
   = note: shop.order_items.line_id is not null (declared by meta.cardinal.grain): unchecked
-  = note: shop.order_items.order_id is not null (declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id): unchecked; test source_not_null_shop_order_items_order_id only warns, so it never fails the build
+  = note: shop.order_items.order_id is not null (declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id): unchecked; test source_not_null_shop_order_items_order_id only warns, so it doesn't fail the build
   = note: shop.order_items.order_id references shop.orders.order_id (declared by meta.cardinal.references): unchecked
   = help: add the dbt tests that `cardinal assumptions --emit-tests` prints
   = see: cardinal explain P002
 
-warning[P002]: exactly once over shop.order_items rests on 4 unchecked assumptions
+warning[P002]: exactly_once of shop.order_items rests on 4 unchecked assumptions
  --> models/marts/order_lines.sql
   |
   = proven, if these hold
   |
   = note: key (order_id, line_id) of shop.order_items (declared by meta.cardinal.grain): unchecked
   = note: shop.order_items.line_id is not null (declared by meta.cardinal.grain): unchecked
-  = note: shop.order_items.order_id is not null (declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id): unchecked; test source_not_null_shop_order_items_order_id only warns, so it never fails the build
+  = note: shop.order_items.order_id is not null (declared by meta.cardinal.grain and test source_not_null_shop_order_items_order_id): unchecked; test source_not_null_shop_order_items_order_id only warns, so it doesn't fail the build
   = note: shop.order_items.order_id references shop.orders.order_id (declared by meta.cardinal.references): unchecked
   = help: add the dbt tests that `cardinal assumptions --emit-tests` prints
   = see: cardinal explain P002
@@ -51,20 +51,19 @@ error[P001]: rows of stg_orders may be dropped or repeated
 6 | join {{ source('shop', 'payments') }} p on o.order_id = p.order_id
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rows of stg_orders may be dropped here
   |
-  = note: at least once: not proven: inner join on order_id in order_payments may drop rows: nothing shows that every stg_orders.order_id appears in shop.payments.order_id
-  = note: at most once: not proven: (order_id) is not a key of the model
+  = note: at least once: not proven, since inner join on order_id in order_payments may drop rows: nothing shows that every stg_orders.order_id appears in shop.payments.order_id
+  = note: at most once: not proven, since (order_id) doesn't identify one row of the model
   = help: use a left join, or declare the reference that guarantees a match with meta.cardinal.references
   = see: cardinal explain P001
 
-info[G004]: grain unknown for 1 model: source shop.payments declares no key
+info[G004]: can't check 1 model: source shop.payments has no known key
  --> models/sources.yml
   |
   = note: affects order_payments
-  = note: shop.payments declares no key
-  = help: declare its grain with meta: {cardinal: {grain: [...]}} on the source, or add a unique test
+  = help: declare its key with meta: {cardinal: {grain: [...]}} on the source, add a unique test, or run cardinal guess
   = see: cardinal explain G004
 
-Analyzed 7 models in <time>: 6 with known grain (86%).
+Analyzed 7 models in <time>: 6 with a known key (86%).
 Contracts: 4 of 7 exactly_once contracts proven.
 Findings: 3 errors, 2 warnings, 1 info (G004 ×1, P001 ×3, P002 ×2).
-Next: declare grain on 1 source to cover 1 more model: shop.payments (see cardinal coverage).
+Next: 1 source without a known key keeps 1 model from being checked: shop.payments. Run cardinal guess so dbt can test likely keys, or declare it (see cardinal coverage).

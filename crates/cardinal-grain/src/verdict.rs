@@ -12,7 +12,7 @@
 
 use crate::analyze::AnalyzedModel;
 use crate::evidence::EvidenceId;
-use crate::facts::{ColSet, JoinSite, LossSite, RelationFacts};
+use crate::facts::{ColSet, Ind, JoinSite, LossSite, RelationFacts};
 use crate::summary::RelationSummary;
 use cardinal_dbt::{Assumption, RelationId};
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -128,13 +128,20 @@ fn aggregate_input(plan: &LogicalPlan) -> Option<&LogicalPlan> {
     }
 }
 
-/// Whether `facts` maps every key column onto some column, via covers or within.
-fn carries(facts: &RelationFacts, rel: &RelationId, key: &[String]) -> bool {
-    facts
-        .covers
-        .iter()
-        .chain(&facts.within)
-        .any(|i| &i.relation == rel && key.iter().all(|k| i.col_for(k).is_some()))
+/// How `facts` carries `key` of `rel`: 2 when one covers fact maps every key column (so
+/// at least once can be proven), 1 when only a within fact does, 0 when neither.
+fn carry_rank(facts: &RelationFacts, rel: &RelationId, key: &[String]) -> u8 {
+    let maps = |inds: &[Ind]| {
+        inds.iter()
+            .any(|i| &i.relation == rel && key.iter().all(|k| i.col_for(k).is_some()))
+    };
+    if maps(&facts.covers) {
+        2
+    } else if maps(&facts.within) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Check that `model` contains each row of `target` exactly once.
@@ -168,24 +175,37 @@ pub fn verdict(model: &AnalyzedModel, target: &RelationSummary, declared: bool) 
         return v;
     };
     // Among the non-null keys, prefer one the model still carries: a projection may drop
-    // one key's columns and keep another's.
+    // one key's columns and keep another's. Look at the output first, then at the
+    // aggregate's input when the output carries none; at each, prefer a key carried by a
+    // covers fact (which can prove at least once) over one carried only by a within fact.
     let candidates: Vec<_> = target
         .keys
         .iter()
         .filter(|k| k.cols.iter().all(|c| target.not_null.contains(c)))
+        .map(|k| (k, names(&k.cols)))
         .collect();
     let out = model.output();
-    let agg_facts = aggregate_input(&model.plan).and_then(|i| model.facts(i));
-    let carried_in = |f: &RelationFacts| {
-        candidates
+    let agg = aggregate_input(&model.plan).and_then(|i| model.facts(i).map(|f| (i, f)));
+    let sites: [Option<(Site, &LogicalPlan, &RelationFacts)>; 2] = [
+        Some((Site::Output, &model.plan, out)),
+        agg.map(|(i, f)| (Site::AggregateInput, i, &**f)),
+    ];
+    let mut chosen = None;
+    for (site, node, f) in sites.into_iter().flatten() {
+        let best = candidates
             .iter()
-            .copied()
-            .find(|k| carries(f, rel, &names(&k.cols)))
-    };
-    let key = carried_in(out)
-        .or_else(|| agg_facts.and_then(|f| carried_in(f)))
-        .or_else(|| candidates.first().copied());
-    let Some(key) = key else {
+            .enumerate()
+            .map(|(i, (_, n))| (carry_rank(f, rel, n), i))
+            .filter(|(r, _)| *r > 0)
+            .max_by_key(|(r, i)| (*r, std::cmp::Reverse(*i)));
+        if let Some((rank, i)) = best {
+            chosen = Some((i, site, node, f, rank));
+            break;
+        }
+    }
+    let (key_index, site, node, facts, rank) =
+        chosen.unwrap_or((0, Site::Output, &model.plan, out, 0));
+    let Some((key, key_names)) = candidates.get(key_index) else {
         v.key = names(&first.cols);
         let cols = first
             .cols
@@ -196,25 +216,13 @@ pub fn verdict(model: &AnalyzedModel, target: &RelationSummary, declared: bool) 
         both(&mut v, Reason::KeyNullable { cols });
         return v;
     };
-    v.key = names(&key.cols);
+    v.key = key_names.clone();
+    v.site = site;
     let mut assumptions: BTreeSet<Assumption> = key.assumptions.iter().cloned().collect();
     for c in &key.cols {
         if let Some(a) = target.not_null_why.get(c) {
             assumptions.extend(a.iter().cloned());
         }
-    }
-
-    // Where to check: the output, or the aggregate's input when only that carries the key.
-    let mut facts: &RelationFacts = out;
-    let mut node: &LogicalPlan = &model.plan;
-    if !carries(out, rel, &v.key)
-        && let Some(input) = aggregate_input(&model.plan)
-        && let Some(f) = model.facts(input)
-        && carries(f, rel, &v.key)
-    {
-        facts = f;
-        node = input;
-        v.site = Site::AggregateInput;
     }
     let schema = node.schema();
     let col_names = |cols: &ColSet| -> Vec<String> {
@@ -245,7 +253,7 @@ pub fn verdict(model: &AnalyzedModel, target: &RelationSummary, declared: bool) 
                 })
                 .collect();
             if reasons.is_empty() {
-                reasons.push(if carries(facts, rel, &v.key) || reads(model, rel) {
+                reasons.push(if rank > 0 || reads(model, rel) {
                     Reason::NotCarried { key: v.key.clone() }
                 } else {
                     Reason::NotRead
@@ -346,14 +354,14 @@ impl Reason {
     pub fn text(&self, of: &str, display: &dyn Fn(&RelationId) -> String) -> String {
         let tuple = |v: &[String]| format!("({})", v.join(", "));
         match self {
-            Reason::NoKey => format!("{of} has no known key, so its rows cannot be told apart"),
+            Reason::NoKey => format!("{of} has no known key, so its rows can't be told apart"),
             Reason::KeyNullable { cols } => format!(
-                "{of}.{} can be null, so its key does not identify every row",
+                "{of}.{} can be null, so its key doesn't identify every row",
                 cols.join(", ")
             ),
-            Reason::NotRead => format!("the model does not read {of}"),
+            Reason::NotRead => format!("the model doesn't read {of}"),
             Reason::NotCarried { key } => {
-                format!("the model does not carry {of}'s key {}", tuple(key))
+                format!("the model doesn't keep {of}'s key {}", tuple(key))
             }
             Reason::Loss { site } => {
                 let mut s = format!("{} in {} may drop rows", site.what, display(&site.model));
@@ -367,7 +375,7 @@ impl Reason {
                 format!("{} in {}", site.message(), display(&site.relation))
             }
             Reason::NotUnique { cols } => {
-                format!("{} is not a key of the model", tuple(cols))
+                format!("{} doesn't identify one row of the model", tuple(cols))
             }
         }
     }

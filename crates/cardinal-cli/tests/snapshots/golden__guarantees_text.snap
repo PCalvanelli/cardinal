@@ -1,0 +1,40 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+warning[P003]: active_orders may now drop rows of stg_orders
+ --> models/marts/active_orders.sql:3:1
+  |
+3 | where status <> 'cancelled'
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ rows of stg_orders may be dropped here
+  |
+  = note: on main, active_orders kept each stg_orders row exactly once; now rows may be dropped
+  = help: if this is intended, add `-- cardinal: allow(P003) reason: …` on that line
+  = see: cardinal explain P003
+
+error[P003]: order_lines may now drop rows of shop.order_items
+ --> models/marts/order_lines.sql:7:1
+  |
+7 | join {{ source('shop', 'products') }} p on i.product_id = p.product_id
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rows of shop.order_items may be dropped here
+  |
+  = note: on main, order_lines kept each shop.order_items row exactly once; now rows may be dropped
+  = note: inner join on product_id in order_lines may drop rows: shop.order_items.product_id can be null, and a null never matches
+  = help: use a left join, or declare the reference that guarantees a match with meta.cardinal.references; if this is intended, add `-- cardinal: allow(P003) reason: …` on that line
+  = see: cardinal explain P003
+
+error[P003]: orders_enriched may now repeat rows of stg_orders
+ --> models/marts/orders_enriched.sql:8:1
+  |
+8 | left join {{ source('shop', 'payments') }} p on o.order_id = p.order_id
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ one-to-many: rows repeat per row of shop.payments
+  |
+  = note: on main, orders_enriched kept each stg_orders row exactly once; now rows may repeat
+  = note: on main, orders_enriched had one row per (order_id); now it can have several
+  = note: also affects 2 downstream models: order_report, order_summary
+  = help: reduce shop.payments to one row per join key before the join; if this is intended, add `-- cardinal: allow(P003) reason: …` on that line
+  = see: cardinal explain P003
+
+Analyzed 10 models in <time>: 7 with a known key (70%).
+Compared with main (state: state): 7 guarantees lost, 1 gained, 16 kept; 1 finding already on main, not shown.
+Findings: 2 errors, 1 warning (P003 ×3); 1 suppressed.

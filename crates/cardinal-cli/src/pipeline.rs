@@ -4,6 +4,7 @@
 use crate::config::{Level, Severities};
 use crate::engine::ProjectLocator;
 use crate::engine::{RunResult, statuses};
+use crate::state::Comparison;
 use cardinal_check::{UnknownGrainModel, contract_findings, unknown_grain};
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
@@ -23,6 +24,8 @@ pub struct Findings {
     pub reported: Vec<Diagnostic>,
     /// Findings hidden by the baseline.
     pub baselined: usize,
+    /// Findings hidden because the base branch (--state) has them too.
+    pub on_main: usize,
     /// Findings below --min-severity.
     pub below_threshold: usize,
     pub suppressed: usize,
@@ -34,6 +37,8 @@ pub struct Findings {
 pub struct Options<'a> {
     pub severities: &'a Severities,
     pub baseline: Option<&'a Baseline>,
+    /// The comparison with the base branch, with --state.
+    pub state: Option<&'a Comparison>,
     pub min_severity: Severity,
 }
 
@@ -52,6 +57,9 @@ pub fn collect(
                 contract_findings(project, rel, &r.verdicts, &locator, &mut raw);
             }
         }
+    }
+    if let Some(c) = opts.state {
+        raw.extend(c.findings.iter().cloned());
     }
 
     // G004: once per root cause, over the selected models.
@@ -99,8 +107,13 @@ pub fn collect(
     let mut kept = Vec::new();
     for mut d in raw {
         let line = d.primary.span.map(|s| s.start.line);
+        // A lost guarantee about a whole model has no line, so a comment anywhere in
+        // the model's file acknowledges it.
+        let anywhere = d.code == Code::P003 && line.is_none();
         let hit = sups.iter_mut().find(|(s, _)| {
-            s.file == d.primary.file && Some(s.target_line) == line && s.codes.contains(&d.code)
+            s.file == d.primary.file
+                && (anywhere || Some(s.target_line) == line)
+                && s.codes.contains(&d.code)
         });
         match hit {
             Some((s, used)) if s.reason.is_some() => {
@@ -119,7 +132,9 @@ pub fn collect(
         }
     }
     for (s, used) in &sups {
-        if !used {
+        // allow(P003) acknowledges a change against the base branch; once the change
+        // is merged it matches nothing, as expected.
+        if !used && s.codes.iter().any(|c| *c != Code::P003) {
             let model = project
                 .models()
                 .find(|r| r.file == s.file)
@@ -190,10 +205,13 @@ pub fn collect(
     });
 
     let mut baselined = 0;
+    let mut on_main = 0;
     let mut below = 0;
     let mut reported = Vec::new();
     for d in &all {
-        if opts.baseline.is_some_and(|b| b.contains(d)) {
+        if opts.state.is_some_and(|c| c.on_main.contains(d)) {
+            on_main += 1;
+        } else if opts.baseline.is_some_and(|b| b.contains(d)) {
             baselined += 1;
         } else if d.severity < opts.min_severity {
             below += 1;
@@ -204,6 +222,7 @@ pub fn collect(
     Findings {
         reported,
         baselined,
+        on_main,
         below_threshold: below,
         suppressed,
         all,

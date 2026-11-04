@@ -143,6 +143,27 @@ const BASES: &[(&str, &str)] = &[
         "p",
     ),
     ("select p, sum(q) over (partition by p) as s from u", "p"),
+    // Measures: averages, ratios and running totals, and what is built on them.
+    (
+        "select x, avg(y) as m, count(*) as n from a group by x",
+        "x",
+    ),
+    (
+        "select x, sum(y) / nullif(count(*), 0) as r from a group by x",
+        "x",
+    ),
+    (
+        "select id, x, sum(y) over (partition by x order by id) as run from a",
+        "id",
+    ),
+    (
+        "select t.x, sum(t.run) as s from (select id, x, sum(y) over (order by id) as run from a) t group by t.x",
+        "x",
+    ),
+    (
+        "select b.id, s.m from b join (select id, avg(x) as m from a group by id) s on b.a_id = s.id",
+        "id",
+    ),
     (
         "select id, x, rank() over (partition by x order by id) as r from a",
         "id",
@@ -647,12 +668,15 @@ fn judged_exact(tables: &Tables, sql: &str) -> bool {
                     _ => None,
                 })
                 .collect();
-            exact = Some(match input.distinct.iter().find(|d| d.col == n) {
-                None => true,
-                Some(d) => {
-                    x.extend(d.agree_on.iter().copied());
+            exact = Some(match input.measures.iter().find(|d| d.col == n) {
+                Some(cardinal_grain::Measure {
+                    kind: cardinal_grain::MeasureKind::NonAdditive { agree_on },
+                    ..
+                }) => {
+                    x.extend(agree_on.iter().copied());
                     input.is_superkey(&x)
                 }
+                _ => true,
             });
             return Ok(TreeNodeRecursion::Stop);
         }

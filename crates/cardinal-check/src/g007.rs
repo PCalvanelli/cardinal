@@ -130,28 +130,28 @@ fn check(
         format!(" within PARTITION BY {p}")
     };
     let label = if wf.params.order_by.is_empty() {
-        format!("no ORDER BY, so rows{within} come in arbitrary order")
+        format!("no ORDER BY, so rows{within} come in any order")
     } else if order.is_empty() {
         format!("the ORDER BY expressions can tie{within}")
     } else {
-        format!("ORDER BY {o} does not identify a row{within}")
+        format!("several rows can share the same {o}{within}")
     };
     let mut notes = vec![format!(
-        "the window's input has grain {}, proven: {}",
+        "the window reads one row per {}: {}",
         tuple(&names(schema, &key.cols)),
         model.arena.explain(key.why)
     )];
     notes.push(match name.as_str() {
-        "row_number" => "rows that tie are numbered in arbitrary order: a dedup on this row_number keeps an arbitrary row, and reruns can keep a different one".into(),
-        "lag" | "lead" => format!("{name}() reads a neighbouring row, and which row neighbours a tie is arbitrary"),
-        _ => format!("tied rows can differ in {name}()'s argument, so which value it returns is arbitrary"),
+        "row_number" => "tied rows are numbered in any order, so a dedup on this row_number keeps a random one, and a rerun can keep a different one".into(),
+        "lag" | "lead" => format!("{name}() reads the next or previous row, and among tied rows that can be any of them"),
+        _ => format!("tied rows can hold different values, so {name}() can return any of them"),
     });
     let add_names = names(schema, &add).join(", ");
     Some(Diagnostic {
         code: Code::G007,
         severity: Code::G007.default_severity(),
         relation: model.relation.0.clone(),
-        message: format!("{name}() ordering has ties"),
+        message: format!("{name}() ordering can tie"),
         primary: cx.locator.label(&model.relation, span, label),
         secondary: vec![],
         notes,
@@ -161,7 +161,7 @@ fn check(
         }),
         evidence: vec![
             format!(
-                "{} is not a key of the window's input",
+                "{} doesn't identify one row of the window's input",
                 tuple(&names(schema, &x))
             ),
             model.arena.explain(key.why),
