@@ -1,6 +1,8 @@
 //! Project automation: `cargo xtask <command>`.
 //!
-//!   fixtures            regenerate fixtures/*/target/{manifest,catalog}.json with dbt and DuckDB
+//!   fixtures [NAME...]  regenerate fixtures/*/target/{manifest,catalog}.json (and state/ from
+//!                       base/) with dbt and DuckDB; for fixtures/guesses, also run
+//!                       `cardinal guess` and its dbt tests (target/run_results.json)
 //!   new-check G006      scaffold a check, its explain page and a fixture project
 //!   corpus DIR...       run `cardinal check` over compiled dbt projects and report per-project stats
 //!   synth DIR [N]       write a synthetic N-model project (default 1000) for benchmarks
@@ -54,7 +56,9 @@ fn run(cmd: &mut Command) -> Result<()> {
 }
 
 /// Regenerate each fixture's artifacts: create source tables from setup.sql, build the
-/// models, generate the catalog, then keep only manifest.json and catalog.json.
+/// models, generate the catalog, then keep only manifest.json and catalog.json. A fixture
+/// with a base/ directory also gets state/: the same project with base/'s files laid over
+/// it, built the same way, standing in for the base branch's artifacts (`--state`).
 fn fixtures(only: &[String]) -> Result<()> {
     let dir = workspace().join("fixtures");
     for entry in std::fs::read_dir(&dir)? {
@@ -64,49 +68,160 @@ fn fixtures(only: &[String]) -> Result<()> {
             continue;
         }
         println!("== {name}");
-        let db = path.join("warehouse.duckdb");
-        let _ = std::fs::remove_file(&db);
-        let _ = std::fs::remove_dir_all(path.join("target"));
-        if path.join("setup.sql").is_file() {
-            let sql = std::fs::read(path.join("setup.sql"))?;
-            let mut child = Command::new("duckdb")
-                .arg(&db)
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .context("duckdb CLI not found")?;
-            std::io::Write::write_all(child.stdin.as_mut().unwrap(), &sql)?;
-            if !child.wait()?.success() {
-                bail!("setup.sql failed for {name}");
+        build_fixture(&path, &name)?;
+        if path.join("base").is_dir() {
+            println!("== {name} (base, into state/)");
+            let tmp = std::env::temp_dir().join(format!("cardinal-fixture-{name}-base"));
+            let _ = std::fs::remove_dir_all(&tmp);
+            copy_tree(
+                &path,
+                &tmp,
+                &["target", "state", "base", "logs", ".cardinal"],
+            )?;
+            copy_tree(&path.join("base"), &tmp, &[])?;
+            build_fixture(&tmp, &name)?;
+            let state = path.join("state");
+            let _ = std::fs::remove_dir_all(&state);
+            std::fs::create_dir_all(&state)?;
+            for f in ["manifest.json", "catalog.json"] {
+                std::fs::copy(tmp.join("target").join(f), state.join(f))?;
             }
+            std::fs::remove_dir_all(&tmp)?;
         }
-        run(Command::new("dbt")
-            .args(["run", "--profiles-dir", "."])
-            .current_dir(&path))?;
-        run(Command::new("dbt")
-            .args(["docs", "generate", "--profiles-dir", "."])
-            .current_dir(&path))?;
-        for e in std::fs::read_dir(path.join("target"))? {
-            let p = e?.path();
-            let keep = matches!(
-                p.file_name().and_then(|n| n.to_str()),
-                Some("manifest.json" | "catalog.json")
-            );
-            if !keep {
-                if p.is_dir() {
-                    std::fs::remove_dir_all(&p)?
-                } else {
-                    std::fs::remove_file(&p)?
-                }
-            }
+    }
+    Ok(())
+}
+
+/// Copy `from` into `to`, skipping top-level entries named in `skip`.
+fn copy_tree(from: &Path, to: &Path, skip: &[&str]) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let p = e?.path();
+        let n = p.file_name().unwrap();
+        if skip.iter().any(|s| n == *s) || n.to_string_lossy().starts_with("warehouse.duckdb") {
+            continue;
         }
-        for junk in ["warehouse.duckdb", "warehouse.duckdb.wal", "logs"] {
-            let p = path.join(junk);
+        if p.is_dir() {
+            copy_tree(&p, &to.join(n), &[])?;
+        } else {
+            std::fs::copy(&p, to.join(n))?;
+        }
+    }
+    Ok(())
+}
+
+fn build_fixture(path: &Path, name: &str) -> Result<()> {
+    let db = path.join("warehouse.duckdb");
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_dir_all(path.join("target"));
+    if path.join("setup.sql").is_file() {
+        let sql = std::fs::read(path.join("setup.sql"))?;
+        let mut child = Command::new("duckdb")
+            .arg(&db)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .context("duckdb CLI not found")?;
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), &sql)?;
+        if !child.wait()?.success() {
+            bail!("setup.sql failed for {name}");
+        }
+    }
+    run(Command::new("dbt")
+        .args(["run", "--profiles-dir", "."])
+        .current_dir(path))?;
+    run(Command::new("dbt")
+        .args(["docs", "generate", "--profiles-dir", "."])
+        .current_dir(path))?;
+    let guesses = GUESS_FIXTURES.contains(&name);
+    if guesses {
+        run_guesses(path)?;
+    }
+    for e in std::fs::read_dir(path.join("target"))? {
+        let p = e?.path();
+        let keep = match p.file_name().and_then(|n| n.to_str()) {
+            Some("manifest.json" | "catalog.json") => true,
+            Some("run_results.json") => guesses,
+            _ => false,
+        };
+        if !keep {
             if p.is_dir() {
-                std::fs::remove_dir_all(&p)?;
+                std::fs::remove_dir_all(&p)?
             } else {
-                let _ = std::fs::remove_file(&p);
+                std::fs::remove_file(&p)?
             }
         }
+    }
+    for junk in [
+        "warehouse.duckdb",
+        "warehouse.duckdb.wal",
+        "logs",
+        ".user.yml",
+    ] {
+        let p = path.join(junk);
+        if p.is_dir() {
+            std::fs::remove_dir_all(&p)?;
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    Ok(())
+}
+
+/// Fixtures that exercise `cardinal guess` end to end.
+const GUESS_FIXTURES: &[&str] = &["guesses"];
+
+/// The `cardinal guess` flow on a built fixture: write the guess tests, have dbt run
+/// them, and keep that run's run_results.json, which the rebuilt artifacts would
+/// otherwise overwrite. Some guesses fail on purpose, so dbt test's exit code is ignored.
+fn run_guesses(path: &Path) -> Result<()> {
+    let _ = std::fs::remove_dir_all(path.join("tests/cardinal"));
+    let _ = std::fs::remove_file(path.join(".cardinal/guesses.json"));
+    if cardinal_cli::commands::guess::run(Some(path.to_path_buf())) != 0 {
+        bail!("cardinal guess failed");
+    }
+    let _ = Command::new("dbt")
+        .args(["test", "--select", "tag:cardinal", "--profiles-dir", "."])
+        .current_dir(path)
+        .status()?;
+    let results = path.join("target/run_results.json");
+    let saved = std::fs::read(&results).context("dbt test wrote no run_results.json")?;
+    let saved = scrub_paths(&saved, path)?;
+    // Rebuild manifest.json with the guess tests in it, and the catalog.
+    run(Command::new("dbt")
+        .args(["docs", "generate", "--profiles-dir", "."])
+        .current_dir(path))?;
+    std::fs::write(&results, saved)?;
+    // Loading the project records the results in .cardinal/guesses.json.
+    cardinal_dbt_load(path)
+}
+
+/// run_results.json records where dbt ran (`args.project_dir`, `args.log_path`). Make
+/// those paths relative to the fixture, so no checked-in file names this machine.
+fn scrub_paths(json: &[u8], fixture: &Path) -> Result<Vec<u8>> {
+    let mut text = String::from_utf8(json.to_vec())?;
+    for root in [fixture.canonicalize()?, fixture.to_path_buf()] {
+        let root = serde_json::to_string(&root.to_string_lossy())?;
+        let root = root.trim_matches('"');
+        text = text
+            .replace(&format!("\"{root}/"), "\"")
+            .replace(&format!("\"{root}\""), "\".\"");
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty())
+        && text.contains(&*home.to_string_lossy())
+    {
+        bail!(
+            "run_results.json still names a path under {}",
+            home.to_string_lossy()
+        );
+    }
+    Ok(text.into_bytes())
+}
+
+fn cardinal_dbt_load(path: &Path) -> Result<()> {
+    if cardinal_cli::commands::coverage::run(Some(path.to_path_buf()), cardinal_cli::Format::Text)
+        != 0
+    {
+        bail!("cardinal coverage failed");
     }
     Ok(())
 }

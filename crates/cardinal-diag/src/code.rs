@@ -12,8 +12,10 @@ pub enum Code {
     G006,
     G007,
     G008,
+    G009,
     P001,
     P002,
+    P003,
     E001,
     E002,
     E003,
@@ -30,8 +32,10 @@ pub const ALL_CODES: &[Code] = &[
     Code::G006,
     Code::G007,
     Code::G008,
+    Code::G009,
     Code::P001,
     Code::P002,
+    Code::P003,
     Code::E001,
     Code::E002,
     Code::E003,
@@ -42,18 +46,20 @@ pub const ALL_CODES: &[Code] = &[
 impl Code {
     pub fn title(self) -> &'static str {
         match self {
-            Code::G001 => "aggregation fans out",
-            Code::G002 => "declared key is not proven",
+            Code::G001 => "a join repeats values that are then added up",
+            Code::G002 => "declared key isn't guaranteed by the SQL",
             Code::G003 => "many-to-many join",
-            Code::G004 => "grain is unknown",
+            Code::G004 => "key is unknown",
             Code::G005 => "suppression matches no finding",
-            Code::G006 => "incremental unique_key is not a key",
-            Code::G007 => "window order has ties",
-            Code::G008 => "distinct count is summed",
-            Code::P001 => "exactly-once contract is not proven",
-            Code::P002 => "proof rests on unchecked assumptions",
+            Code::G006 => "incremental unique_key isn't unique",
+            Code::G007 => "window ordering can tie",
+            Code::G008 => "adds up a number that can't be added",
+            Code::G009 => "adds amounts in different units",
+            Code::P001 => "exactly_once contract isn't proven",
+            Code::P002 => "proof relies on something no test checks",
+            Code::P003 => "guarantee from main is lost",
             Code::E001 => "missing compiled SQL",
-            Code::E002 => "SQL does not parse",
+            Code::E002 => "SQL doesn't parse",
             Code::E003 => "unresolved function",
             Code::E004 => "unresolved relation or column",
             Code::E005 => "unsupported SQL",
@@ -97,7 +103,7 @@ impl FromStr for Code {
             .find(|c| c.to_string().eq_ignore_ascii_case(s.trim()))
             .copied()
             .ok_or_else(|| {
-                format!("unknown code `{s}` (expected G001 to G008, P001, P002 or E001 to E005)")
+                format!("unknown code `{s}` (expected G001 to G009, P001 to P003 or E001 to E005)")
             })
     }
 }

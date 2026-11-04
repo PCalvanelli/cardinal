@@ -49,14 +49,14 @@ impl Check for IncrementalKeyNotUnique {
                 code: Code::G006,
                 severity: Severity::Error,
                 relation: model.relation.0.clone(),
-                message: format!("unique_key {key} names columns the model does not output"),
+                message: format!("unique_key {key} names columns the model doesn't output"),
                 primary: cx
                     .locator
                     .label(&model.relation, None, format!("missing: {}", missing.join(", "))),
                 secondary: vec![],
                 notes: vec![format!("unique_key = {raw}, incremental_strategy: {strategy}")],
                 fix: Some(Fix {
-                    message: "output the unique_key columns, or set unique_key to columns the model selects".into(),
+                    message: "select the unique_key columns, or set unique_key to columns the model selects".into(),
                     replacement: None,
                 }),
                 evidence: vec![],
@@ -96,27 +96,32 @@ impl Check for IncrementalKeyNotUnique {
             .map(|k| tuple(&k.cols.iter().map(|c| names[*c].clone()).collect::<Vec<_>>()))
             .collect();
         let label = if proven.is_empty() {
-            "no key can be proven for this model's rows".to_string()
+            "the SQL guarantees no key for this model".to_string()
         } else {
-            format!("the SQL proves grain {}", proven.join(" and "))
+            format!(
+                "the SQL guarantees one row per {}",
+                proven.join(" and per ")
+            )
         };
         let fix = match proven.first() {
             Some(g) => format!(
-                "set unique_key to the model's grain {g}, or make the SQL produce one row per {key}, e.g. a row_number() dedup"
+                "set unique_key to the model's key {g}, or make the SQL return one row per {key}, e.g. with a row_number() dedup"
             ),
-            None => format!("make the SQL produce one row per {key}, e.g. a row_number() dedup"),
+            None => {
+                format!("make the SQL return one row per {key}, e.g. with a row_number() dedup")
+            }
         };
         out.push(Diagnostic {
             code: Code::G006,
             severity: Code::G006.default_severity(),
             relation: model.relation.0.clone(),
-            message: format!("incremental unique_key {key} is not a key of the model's rows"),
+            message: format!("incremental unique_key {key} isn't unique: the SQL can return several rows per {key}"),
             primary: cx.locator.label(&model.relation, None, label),
             secondary: vec![],
             notes: vec![
                 format!("unique_key = {raw}, incremental_strategy: {strategy}"),
                 format!(
-                    "two new rows with the same {key} make merge fail or update from an arbitrary row, and delete+insert keep both"
+                    "two new rows with the same {key} make merge fail or pick one at random, and delete+insert keeps both"
                 ),
             ],
             fix: Some(Fix {

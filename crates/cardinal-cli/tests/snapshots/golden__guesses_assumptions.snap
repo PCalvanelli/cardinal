@@ -1,0 +1,29 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+Cardinal takes 6 facts on trust; dbt tests check all of them.
+
+checked    key (customer_id) of app.customers
+           by test cardinal_key_app_customers_customer_id_4997a671 (Cardinal's guess, passed on 2026-11-04)
+           used by orders_with_customer, revenue_by_region, stg_customers
+
+checked    key (order_id) of app.orders
+           by test source_unique_app_orders_order_id
+           used by orders_with_customer, revenue_by_region
+
+checked    app.orders.order_id is not null
+           by test source_not_null_app_orders_order_id
+           used by orders_with_customer, revenue_by_region
+
+checked    app.customers.customer_id is not null
+           by test cardinal_key_app_customers_customer_id_4997a671 (Cardinal's guess, passed on 2026-11-04)
+           used by stg_customers
+
+checked    app.orders.customer_id is not null
+           by test source_not_null_app_orders_customer_id
+           used by orders_with_customer
+
+checked    app.orders.customer_id references app.customers.customer_id
+           by test cardinal_ref_app_orders_customer_id_to_app_customers_9be4ebc6 (Cardinal's guess, passed on 2026-11-04)
+           used by orders_with_customer

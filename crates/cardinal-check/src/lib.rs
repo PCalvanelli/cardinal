@@ -7,7 +7,9 @@ mod g004;
 mod g006;
 mod g007;
 mod g008;
+mod g009;
 mod p001;
+mod p003;
 mod sites;
 mod tool;
 
@@ -17,8 +19,12 @@ pub use g003::ManyToManyJoin;
 pub use g004::{UnknownGrainModel, unknown_grain};
 pub use g006::IncrementalKeyNotUnique;
 pub use g007::WindowOrderTies;
-pub use g008::SummedDistinctCount;
+pub use g008::NonAdditiveSum;
+pub use g009::MixedUnits;
 pub use p001::contract_findings;
+pub use p003::{
+    Bound, Guarantee, Lost, ModelChange, Side, compare as compare_guarantees, lost_guarantees,
+};
 pub use tool::plan_failure;
 
 use cardinal_dbt::{Relation, RelationId};
@@ -53,13 +59,14 @@ pub fn model_checks() -> Vec<Box<dyn Check>> {
         Box::new(ManyToManyJoin),
         Box::new(IncrementalKeyNotUnique),
         Box::new(WindowOrderTies),
-        Box::new(SummedDistinctCount),
+        Box::new(NonAdditiveSum),
+        Box::new(MixedUnits),
     ]
 }
 
 /// Changes whenever the set of checks or their output changes, so cached results from
 /// an older check set are not reused.
-pub const CHECKS_FINGERPRINT: &str = "G001-G008.1+P";
+pub const CHECKS_FINGERPRINT: &str = "G001-G009+P003";
 
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))

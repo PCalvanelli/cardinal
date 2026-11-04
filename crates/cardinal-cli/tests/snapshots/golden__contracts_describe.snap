@@ -4,10 +4,10 @@ expression: out
 ---
 model.contracts.orders_enriched  (models/marts/orders_enriched.sql)
 
-grain   (order_id)
-        proven: many-to-one join on customer_id; key of shop.orders from meta.cardinal.grain
+key     (order_id)
+        proven: many-to-one join on customer_id; key of shop.orders (meta.cardinal.grain)
 
-column          native grain   nulls
+column          one value per  nulls
 order_id        (order_id)     never
 status          (order_id)     possible
 customer_name   (order_id)     possible
@@ -18,8 +18,8 @@ joins
 rows
   stg_orders       exactly once  (contract)
   stg_customers    not proven (rows may be dropped or repeat)
-      not at least once: stg_customers.customer_id can be null, so its key does not identify every row
-      not at most once: stg_customers.customer_id can be null, so its key does not identify every row
+      not at least once: stg_customers.customer_id can be null, so its key doesn't identify every row
+      not at most once: stg_customers.customer_id can be null, so its key doesn't identify every row
 
 assumes
   key (order_id) of shop.orders

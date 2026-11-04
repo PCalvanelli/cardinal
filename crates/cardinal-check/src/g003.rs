@@ -21,10 +21,9 @@ impl Check for ManyToManyJoin {
             }
             let on_l = tuple(&j.on_left);
             let on_r = tuple(&j.on_right);
-            let grain = |g: &Option<Vec<String>>| {
-                g.as_ref()
-                    .map(|g| tuple(g))
-                    .unwrap_or_else(|| "unknown".into())
+            let rows = |name: &str, g: &Option<Vec<String>>| match g {
+                Some(g) => format!("{name} has one row per {}", tuple(g)),
+                None => format!("{name}'s key is unknown"),
             };
             out.push(Diagnostic {
                 code: Code::G003,
@@ -38,16 +37,19 @@ impl Check for ManyToManyJoin {
                 ),
                 secondary: vec![],
                 notes: vec![
-                    format!("{} has grain {}", j.left, grain(&j.left_grain)),
-                    format!("{} has grain {}", j.right, grain(&j.right_grain)),
+                    rows(&j.left, &j.left_grain),
+                    rows(&j.right, &j.right_grain),
                     "every pair of matching rows becomes one output row".into(),
                 ],
                 fix: Some(Fix {
-                    message: format!(
-                        "reduce {} to one row per {on_r} before joining, or join on its full key {}",
-                        j.right,
-                        grain(&j.right_grain)
-                    ),
+                    message: match &j.right_grain {
+                        Some(g) => format!(
+                            "reduce {} to one row per {on_r} before joining, or join on its full key {}",
+                            j.right,
+                            tuple(g)
+                        ),
+                        None => format!("reduce {} to one row per {on_r} before joining", j.right),
+                    },
                     replacement: None,
                 }),
                 evidence: vec![format!("{} join on {}", Cardinality::ManyToMany.label(), j.on_left.join(", "))],

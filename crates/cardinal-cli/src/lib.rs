@@ -5,7 +5,9 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod engine;
+pub mod guess;
 pub mod pipeline;
+pub mod state;
 pub mod synth;
 
 pub use cli::{CheckArgs, Format};

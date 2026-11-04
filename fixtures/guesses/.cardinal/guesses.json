@@ -1,0 +1,47 @@
+{
+  "guesses": [
+    {
+      "hypothesis": {
+        "kind": "key",
+        "relation": "source.guesses.app.customers",
+        "columns": [
+          "customer_id"
+        ]
+      },
+      "passed": true,
+      "failures": 0,
+      "test": "cardinal_key_app_customers_customer_id_4997a671",
+      "generated_at": "2026-11-04T15:23:25.400595Z"
+    },
+    {
+      "hypothesis": {
+        "kind": "key",
+        "relation": "source.guesses.app.events",
+        "columns": [
+          "event_id"
+        ]
+      },
+      "passed": false,
+      "failures": 2,
+      "test": "cardinal_key_app_events_event_id_daa465c3",
+      "generated_at": "2026-11-04T15:23:25.400595Z"
+    },
+    {
+      "hypothesis": {
+        "kind": "references",
+        "relation": "source.guesses.app.orders",
+        "columns": [
+          "customer_id"
+        ],
+        "to": "source.guesses.app.customers",
+        "to_columns": [
+          "customer_id"
+        ]
+      },
+      "passed": true,
+      "failures": 0,
+      "test": "cardinal_ref_app_orders_customer_id_to_app_customers_9be4ebc6",
+      "generated_at": "2026-11-04T15:23:25.400595Z"
+    }
+  ]
+}

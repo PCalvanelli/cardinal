@@ -1,6 +1,6 @@
 [package]
 name = "cardinal-check"
-description = "Cardinal's grain checks (G001 to G008) and exactly-once contracts (P001, P002)"
+description = "Cardinal's grain checks (G001 to G009) and exactly-once contracts (P001, P002)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -9,7 +9,7 @@ use std::process::ExitCode;
 #[command(
     name = "cardinal",
     version,
-    about = "Find grain errors in a dbt project before any data moves"
+    about = "Check that your dbt models count every row exactly once, before anything runs"
 )]
 pub struct Cli {
     /// dbt project directory (default: walk up from the current directory)
@@ -24,34 +24,41 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Analyze the project (or selected models) and print findings
+    /// Check the project (or selected models) and print findings
     Check(CheckArgs),
-    /// Show a model's grain, keys, each column's native grain, joins and evidence
+    /// Show what Cardinal knows about a model: its key, columns, joins and the rows it keeps
     Describe {
         /// Model name, unique id or path
         model: String,
     },
-    /// Print the long explanation of a finding code, with a broken and a fixed example
+    /// Explain a finding code, with a broken and a fixed example
     Explain {
         /// A code such as G001
         code: String,
     },
-    /// The declared facts proofs rest on, and whether dbt tests check them
+    /// List the facts Cardinal takes on trust, and whether a dbt test checks each one
     Assumptions {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
-        /// Print dbt tests (YAML) that would check every unchecked assumption
+        /// Print the dbt tests (YAML) that would check every unchecked one
         #[arg(long)]
         emit_tests: bool,
     },
-    /// Share of models with known grain, and the root causes for the rest
+    /// Guess the keys of sources that have none, and write dbt tests to check them
+    ///
+    /// Writes one dbt test per guess to tests/cardinal/ (set path under [guess] in
+    /// cardinal.toml to change it). Then run `dbt test --select tag:cardinal`. Cardinal
+    /// uses each guess dbt passes, always labeled as a guess, and never guesses again one
+    /// dbt fails. Cardinal never connects to the warehouse; dbt runs the tests.
+    Guess,
+    /// How many models Cardinal can check, and which keys to declare next
     Coverage {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Write cardinal.toml with the detected dialect and an empty baseline
+    /// Write a starter cardinal.toml
     Init,
-    /// Re-run check whenever target/manifest.json changes
+    /// Run check again whenever target/manifest.json changes
     Watch(CheckArgs),
 }
 
@@ -78,25 +85,29 @@ pub struct CheckArgs {
     /// Write to a file instead of stdout
     #[arg(long, short, value_name = "FILE")]
     pub output: Option<PathBuf>,
-    /// Report only findings not in the baseline
+    /// Compare with main's dbt artifacts in DIR, like dbt's --state: fail on guarantees
+    /// main has that this branch loses, and hide findings main already has. Default: $DBT_STATE
+    #[arg(long, value_name = "DIR")]
+    pub state: Option<PathBuf>,
+    /// Report only findings not in this baseline file
     #[arg(long, value_name = "FILE")]
     pub baseline: Option<PathBuf>,
-    /// Rewrite the baseline with current findings
+    /// Write the current findings to the baseline file
     #[arg(long)]
     pub update_baseline: bool,
-    /// error | warning | info
+    /// Lowest severity to show: error, warning or info
     #[arg(long, default_value = "warning", value_name = "LEVEL")]
     pub min_severity: String,
-    /// Treat a code as an error for this run
+    /// Treat a code as an error
     #[arg(long, value_name = "CODE")]
     pub deny: Vec<String>,
-    /// Turn a code off for this run
+    /// Turn a code off
     #[arg(long, value_name = "CODE")]
     pub allow: Vec<String>,
     /// Parallelism (default: logical cores)
     #[arg(long, short, value_name = "N")]
     pub jobs: Option<usize>,
-    /// Ignore cached facts
+    /// Ignore the cache in .cardinal/cache
     #[arg(long)]
     pub no_cache: bool,
 }
@@ -120,6 +131,7 @@ pub fn main() -> ExitCode {
         Command::Check(args) => commands::check::run(cli.project_dir, args),
         Command::Describe { model } => commands::describe::run(cli.project_dir, &model),
         Command::Explain { code } => commands::explain::run(&code),
+        Command::Guess => commands::guess::run(cli.project_dir),
         Command::Coverage { format } => commands::coverage::run(cli.project_dir, format),
         Command::Assumptions { format, emit_tests } => {
             commands::assumptions::run(cli.project_dir, format, emit_tests)

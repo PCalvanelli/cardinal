@@ -107,9 +107,9 @@ pub enum UnknownReason {
 impl UnknownReason {
     pub fn describe(&self, display: &dyn Fn(&RelationId) -> String) -> String {
         match self {
-            UnknownReason::SourceWithoutKey(r) => format!("{} declares no key", display(r)),
-            UnknownReason::UnsupportedOperator(op) => format!("{op} loses the grain"),
-            UnknownReason::PlanError(r) => format!("{} could not be planned", display(r)),
+            UnknownReason::SourceWithoutKey(r) => format!("{} has no known key", display(r)),
+            UnknownReason::UnsupportedOperator(op) => format!("{op} loses track of the key"),
+            UnknownReason::PlanError(r) => format!("Cardinal couldn't read {}", display(r)),
             UnknownReason::PythonModel(r) => format!("{} is a Python model", display(r)),
         }
     }
@@ -199,32 +199,171 @@ pub struct DistinctSite {
     pub across: Vec<String>,
 }
 
-/// Column `col` holds a count of distinct values per group. Two rows that count the same
-/// value always agree on `agree_on`, so summing `col` over rows that differ on `agree_on`
-/// is exact, and summing it over rows that agree on `agree_on` can count a value twice.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DistinctCount {
-    pub col: usize,
-    pub agree_on: ColSet,
-    pub site: Arc<DistinctSite>,
+/// What a computed measure is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Computed {
+    /// avg(x)
+    Average,
+    /// A division of two aggregates, such as sum(a) / sum(b).
+    Ratio,
+    /// median or a percentile.
+    Percentile,
+    /// sum(x) over (order by t): a running or rolling total.
+    RunningTotal,
 }
 
-impl DistinctCount {
-    /// Move to new column positions; None if the column or an `agree_on` column has none.
-    pub fn remap(&self, f: impl Fn(usize) -> Option<usize>) -> Option<DistinctCount> {
-        Some(DistinctCount {
-            col: f(self.col)?,
-            agree_on: self
-                .agree_on
-                .iter()
-                .map(|c| f(*c))
-                .collect::<Option<ColSet>>()?,
-            site: self.site.clone(),
-        })
+impl Computed {
+    /// "average", "running total".
+    pub fn label(self) -> &'static str {
+        match self {
+            Computed::Average => "average",
+            Computed::Ratio => "ratio",
+            Computed::Percentile => "percentile",
+            Computed::RunningTotal => "running total",
+        }
+    }
+    /// "an average", "a ratio".
+    pub fn noun(self) -> &'static str {
+        match self {
+            Computed::Average => "an average",
+            Computed::Ratio => "a ratio",
+            Computed::Percentile => "a percentile",
+            Computed::RunningTotal => "a running total",
+        }
+    }
+    /// "averages", "ratios".
+    pub fn plural(self) -> &'static str {
+        match self {
+            Computed::Average => "averages",
+            Computed::Ratio => "ratios",
+            Computed::Percentile => "percentiles",
+            Computed::RunningTotal => "running totals",
+        }
     }
 }
 
-pub const MAX_DISTINCT: usize = 32;
+/// Where a measure's kind comes from: the SQL that computed it, or a declaration.
+/// Recorded so a later sum of it can point back here, even across models.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MeasureSite {
+    /// `count(distinct …)`.
+    Distinct(DistinctSite),
+    Computed {
+        relation: RelationId,
+        /// In that relation's compiled SQL.
+        span: Option<SqlSpan>,
+        what: Computed,
+        /// A running total's ORDER BY columns.
+        over: Vec<String>,
+    },
+    /// `meta.cardinal.measure` on a column.
+    Declared {
+        relation: RelationId,
+        column: String,
+        /// A stock's `over` columns; empty for a non-additive column.
+        over: Vec<String>,
+    },
+}
+
+impl MeasureSite {
+    pub fn relation(&self) -> &RelationId {
+        match self {
+            MeasureSite::Distinct(d) => &d.relation,
+            MeasureSite::Computed { relation, .. } | MeasureSite::Declared { relation, .. } => {
+                relation
+            }
+        }
+    }
+    pub fn span(&self) -> Option<SqlSpan> {
+        match self {
+            MeasureSite::Distinct(d) => d.span,
+            MeasureSite::Computed { span, .. } => *span,
+            MeasureSite::Declared { .. } => None,
+        }
+    }
+}
+
+/// How a column may be added up.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MeasureKind {
+    /// Summing it over more than one row is wrong, except over rows that differ on
+    /// `agree_on`. For a distinct count, two rows that count the same value always agree
+    /// on `agree_on`, so summing over rows that differ there is exact. Empty for
+    /// averages, ratios and percentiles.
+    NonAdditive { agree_on: ColSet },
+    /// A stock, such as a balance or a running total: summing rows that differ on
+    /// `over` is wrong. A sum is safe when every row it adds agrees on `over`. None when
+    /// the `over` columns were dropped while they still varied: rows can come from
+    /// different `over` values and nothing says which (see `MeasureSite` for their names).
+    Stock { over: Option<ColSet> },
+}
+
+/// Column `col` is a measure that can't be freely added up (see `MeasureKind`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Measure {
+    pub col: usize,
+    pub kind: MeasureKind,
+    pub site: Arc<MeasureSite>,
+}
+
+impl Measure {
+    /// Move to new column positions; None if the column or a column of its kind has none.
+    pub fn remap(&self, f: impl Fn(usize) -> Option<usize>) -> Option<Measure> {
+        let set = |s: &ColSet| s.iter().map(|c| f(*c)).collect::<Option<ColSet>>();
+        Some(Measure {
+            col: f(self.col)?,
+            kind: match &self.kind {
+                MeasureKind::NonAdditive { agree_on } => MeasureKind::NonAdditive {
+                    agree_on: set(agree_on)?,
+                },
+                MeasureKind::Stock { over: Some(o) } => MeasureKind::Stock {
+                    over: Some(set(o)?),
+                },
+                MeasureKind::Stock { over: None } => MeasureKind::Stock { over: None },
+            },
+            site: self.site.clone(),
+        })
+    }
+
+    /// The distinct count this measure is, if it is one.
+    pub fn distinct(&self) -> Option<&DistinctSite> {
+        match &*self.site {
+            MeasureSite::Distinct(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// What the SQL computed it as, if it was computed.
+    pub fn computed(&self) -> Option<Computed> {
+        match &*self.site {
+            MeasureSite::Computed { what, .. } => Some(*what),
+            _ => None,
+        }
+    }
+}
+
+/// Where a column's unit was declared: `meta.cardinal.unit`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UnitSite {
+    pub relation: RelationId,
+    /// The declared column, e.g. "amount".
+    pub column: String,
+    /// The column holding its unit there, e.g. "currency".
+    pub unit: String,
+}
+
+/// Column `col` is an amount whose unit varies by row. `unit` holds columns that
+/// determine the unit (usually the unit column itself), or None when the unit column
+/// was dropped while it still varied: the rows can be in different units and nothing
+/// says which.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unit {
+    pub col: usize,
+    pub unit: Option<ColSet>,
+    pub site: Arc<UnitSite>,
+}
+
+pub const MAX_MEASURES: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct RelationFacts {
@@ -248,8 +387,13 @@ pub struct RelationFacts {
     /// Evidence for non-null columns that rest on a declaration. A column in `not_null`
     /// with no entry here is proven by the SQL.
     pub nn_why: BTreeMap<usize, EvidenceId>,
-    /// Columns holding distinct counts (see `DistinctCount`).
-    pub distinct: Vec<DistinctCount>,
+    /// Columns that can't be freely added up (see `Measure`).
+    pub measures: Vec<Measure>,
+    /// Amounts whose unit varies by row (see `Unit`).
+    pub units: Vec<Unit>,
+    /// Columns holding the result of a counting or summing aggregate (sum, count, avg),
+    /// grouped or windowed. Dividing two of them makes a ratio.
+    pub aggregated: ColSet,
 }
 
 impl RelationFacts {
@@ -265,7 +409,9 @@ impl RelationFacts {
             within: vec![],
             ranks: vec![],
             nn_why: BTreeMap::new(),
-            distinct: vec![],
+            measures: vec![],
+            units: vec![],
+            aggregated: ColSet::new(),
         }
     }
 
@@ -446,14 +592,84 @@ impl RelationFacts {
         self.within = dedup_inds(std::mem::take(&mut self.within));
         let nn = self.not_null.clone();
         self.nn_why.retain(|c, _| nn.contains(c));
-        let mut distinct: Vec<DistinctCount> = Vec::new();
-        for d in std::mem::take(&mut self.distinct) {
-            if d.col < width && !distinct.contains(&d) {
-                distinct.push(d);
+        let mut measures: Vec<Measure> = Vec::new();
+        for m in std::mem::take(&mut self.measures) {
+            if m.col < width && !measures.iter().any(|e| e.col == m.col) {
+                measures.push(m);
             }
         }
-        distinct.truncate(MAX_DISTINCT);
-        self.distinct = distinct;
+        measures.truncate(MAX_MEASURES);
+        self.measures = measures;
+        let mut units: Vec<Unit> = Vec::new();
+        for u in std::mem::take(&mut self.units) {
+            if u.col < width && !units.iter().any(|e| e.col == u.col) {
+                units.push(u);
+            }
+        }
+        units.truncate(MAX_MEASURES);
+        self.units = units;
+        self.aggregated.retain(|c| *c < width);
+    }
+
+    /// Columns of this node that a copy of `kept` determines in place of `target`: `target`
+    /// itself when every column is kept, else a minimal kept set that determines it.
+    /// None when `kept` does not determine `target`.
+    fn stand_in(&self, target: &ColSet, kept: &ColSet) -> Option<ColSet> {
+        if target.is_subset(kept) {
+            return Some(target.clone());
+        }
+        target
+            .is_subset(&self.closure(kept))
+            .then(|| self.minimize(kept, target, &[]))
+    }
+
+    /// This node's measures and units on the outputs of a projection, where `to` maps an
+    /// input column to its first plain copy. A computed column carries nothing. A stock
+    /// or unit whose columns are dropped moves to kept columns that determine them; a
+    /// constant one is dropped, since every row then agrees on it; otherwise it is kept
+    /// with its `over` or unit unknown, so a later sum of it is still caught.
+    pub fn carried(&self, to: &dyn Fn(usize) -> Option<usize>) -> (Vec<Measure>, Vec<Unit>) {
+        let kept: ColSet = (0..self.width).filter(|c| to(*c).is_some()).collect();
+        let constant = self.closure(&ColSet::new());
+        let map = |s: &ColSet| -> ColSet { s.iter().filter_map(|c| to(*c)).collect() };
+        let measures = self
+            .measures
+            .iter()
+            .filter_map(|m| match &m.kind {
+                MeasureKind::NonAdditive { .. } => m.remap(to),
+                MeasureKind::Stock { over } => {
+                    let col = to(m.col)?;
+                    let over = match over {
+                        None => None,
+                        Some(o) if o.is_subset(&constant) => return None,
+                        Some(o) => self.stand_in(o, &kept).map(|o| map(&o)),
+                    };
+                    Some(Measure {
+                        col,
+                        kind: MeasureKind::Stock { over },
+                        site: m.site.clone(),
+                    })
+                }
+            })
+            .collect();
+        let units = self
+            .units
+            .iter()
+            .filter_map(|u| {
+                let col = to(u.col)?;
+                let unit = match &u.unit {
+                    None => None,
+                    Some(x) if x.is_subset(&constant) => return None,
+                    Some(x) => self.stand_in(x, &kept).map(|x| map(&x)),
+                };
+                Some(Unit {
+                    col,
+                    unit,
+                    site: u.site.clone(),
+                })
+            })
+            .collect();
+        (measures, units)
     }
 
     /// Set status from the inputs' combined status, given the keys now known.
@@ -566,7 +782,9 @@ mod tests {
             within: vec![],
             ranks: vec![],
             nn_why: BTreeMap::new(),
-            distinct: vec![],
+            measures: vec![],
+            units: vec![],
+            aggregated: ColSet::new(),
         };
         assert_eq!(f.closure(&set(&[0])), set(&[0, 2]));
         assert!(f.is_superkey(&set(&[0, 1])));

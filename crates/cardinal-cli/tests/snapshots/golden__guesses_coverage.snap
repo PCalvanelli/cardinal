@@ -1,0 +1,15 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+3 of 5 models have a known key (60%); Cardinal could read the SQL of 5 (100%).
+
+To check the rest, fix these, most models first:
+   1. app.events has no known key   2 models
+
+Cardinal's guesses, after dbt tested them:
+  used     app.customers has one row per customer_id (dbt test passed on 2026-11-04)
+  dropped  app.events is not unique on event_id: dbt found 2 duplicate or null rows
+  used     every app.orders.customer_id is in app.customers.customer_id (dbt test passed on 2026-11-04)
+
+Next: 1 source without a known key keeps 2 models from being checked: app.events. Declare its key in YAML.

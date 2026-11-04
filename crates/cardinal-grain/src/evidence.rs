@@ -131,7 +131,7 @@ impl EvidenceArena {
         match self.get(id) {
             Evidence::Declared {
                 display, origin, ..
-            } => out.push(format!("key of {display} from {}", origin.describe())),
+            } => out.push(format!("key of {display} ({})", origin.describe())),
             Evidence::DeclaredNotNull { .. }
             | Evidence::DeclaredReference { .. }
             | Evidence::Identity { .. } => {}
@@ -145,7 +145,7 @@ impl EvidenceArena {
                 display, summary, ..
             } => {
                 if summary.is_empty() {
-                    out.push(format!("grain of {display}"))
+                    out.push(format!("key of {display}"))
                 } else {
                     out.push(summary.clone())
                 }
@@ -169,6 +169,11 @@ impl EvidenceArena {
                 if cols.is_empty() {
                     out.push("aggregate with no GROUP BY returns one row".into())
                 } else {
+                    // `warehouse.main.order_lines.ordered_at` reads as `ordered_at`.
+                    let cols: Vec<&str> = cols
+                        .iter()
+                        .map(|c| c.rsplit('.').next().unwrap_or(c))
+                        .collect();
                     out.push(format!("GROUP BY {}", cols.join(", ")))
                 }
             }

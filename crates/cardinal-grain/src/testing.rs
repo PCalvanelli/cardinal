@@ -70,7 +70,9 @@ impl Tables {
                 within: vec![],
                 ranks: vec![],
                 losses: vec![],
-                distinct: vec![],
+                measures: vec![],
+                units: vec![],
+                aggregated: vec![],
             },
         );
         self.by_name.insert(name.to_string(), id);
@@ -119,6 +121,37 @@ impl Tables {
         }
     }
 
+    /// Declare a column's measure and unit on a table added earlier, the way
+    /// meta.cardinal.measure and meta.cardinal.unit do.
+    pub fn declare_measure(
+        &mut self,
+        name: &str,
+        measures: &[cardinal_dbt::DeclaredMeasure],
+        units: &[cardinal_dbt::DeclaredUnit],
+    ) {
+        let id = self.by_name[name].clone();
+        let s = self.summaries.get_mut(&id).expect("table");
+        let cols: Vec<cardinal_dbt::Column> = s
+            .columns
+            .iter()
+            .map(|c| cardinal_dbt::Column {
+                name: c.name.clone(),
+                data_type: None,
+            })
+            .collect();
+        let mut rel = test_relation(&id, name);
+        rel.kind = cardinal_dbt::Kind::Source;
+        rel.columns = cols;
+        rel.measures = measures.to_vec();
+        rel.units = units.to_vec();
+        let mut decl = crate::summary::summary_from_declared(
+            &rel,
+            crate::facts::UnknownReason::SourceWithoutKey(id.clone()),
+        );
+        s.measures.append(&mut decl.measures);
+        s.units.append(&mut decl.units);
+    }
+
     pub fn id(&self, name: &str) -> RelationId {
         self.by_name[name].clone()
     }
@@ -143,6 +176,36 @@ impl TableLookup for Tables {
 impl UpstreamFacts for Tables {
     fn summary(&self, id: &RelationId) -> Option<&RelationSummary> {
         self.summaries.get(id)
+    }
+}
+
+/// A bare model relation for tests.
+fn test_relation(id: &RelationId, name: &str) -> cardinal_dbt::Relation {
+    cardinal_dbt::Relation {
+        id: id.clone(),
+        kind: cardinal_dbt::Kind::Model {
+            materialized: "view".into(),
+        },
+        display: name.into(),
+        package: "test".into(),
+        file: format!("models/{name}.sql"),
+        compiled_sql: None,
+        raw_sql: None,
+        compiled_path: None,
+        relation_parts: vec![name.into()],
+        depends_on: vec![],
+        columns: vec![],
+        columns_from: cardinal_dbt::project::ColumnsFrom::Missing,
+        declared_keys: vec![],
+        not_null: Default::default(),
+        references: vec![],
+        exactly_once: vec![],
+        measures: vec![],
+        units: vec![],
+        tests: vec![],
+        contract_enforced: false,
+        tags: vec![],
+        incremental: None,
     }
 }
 
@@ -200,35 +263,48 @@ impl GrainCase {
         self
     }
 
+    /// Declare `col` of `table` a stock over `over` (or non-additive, when `over` is
+    /// empty).
+    pub fn stock(mut self, table: &str, col: &str, over: &[&str]) -> Self {
+        let kind = if over.is_empty() {
+            cardinal_dbt::MeasureDecl::NonAdditive
+        } else {
+            cardinal_dbt::MeasureDecl::Stock {
+                over: over.iter().map(|s| s.to_string()).collect(),
+            }
+        };
+        self.tables.declare_measure(
+            table,
+            &[cardinal_dbt::DeclaredMeasure {
+                column: col.into(),
+                kind,
+            }],
+            &[],
+        );
+        self
+    }
+
+    /// Declare that `unit` holds the unit of `col` in `table`.
+    pub fn unit(mut self, table: &str, col: &str, unit: &str) -> Self {
+        self.tables.declare_measure(
+            table,
+            &[],
+            &[cardinal_dbt::DeclaredUnit {
+                column: col.into(),
+                unit: unit.into(),
+            }],
+        );
+        self
+    }
+
     /// Analyze `sql` as an upstream model named `name`, and make its summary readable
     /// by later SQL, the way the engine passes facts between models.
     pub fn model(mut self, name: &str, sql: &str) -> Self {
         let m = analyze_sql(&self.tables, sql);
         let id = RelationId(format!("model.test.{name}"));
-        let rel = cardinal_dbt::Relation {
-            id: id.clone(),
-            kind: cardinal_dbt::Kind::Model {
-                materialized: "view".into(),
-            },
-            display: name.into(),
-            package: "test".into(),
-            file: format!("models/{name}.sql"),
-            compiled_sql: Some(sql.into()),
-            raw_sql: Some(sql.into()),
-            compiled_path: None,
-            relation_parts: vec![name.into()],
-            depends_on: vec![],
-            columns: vec![],
-            columns_from: cardinal_dbt::project::ColumnsFrom::Missing,
-            declared_keys: vec![],
-            not_null: Default::default(),
-            references: vec![],
-            exactly_once: vec![],
-            tests: vec![],
-            contract_enforced: false,
-            tags: vec![],
-            incremental: None,
-        };
+        let mut rel = test_relation(&id, name);
+        rel.compiled_sql = Some(sql.into());
+        rel.raw_sql = Some(sql.into());
         let schema = m.plan.schema().as_arrow().clone();
         let (summary, _) = crate::summary::summarize(&rel, &schema, m.output(), &m.arena);
         self.tables.insert_summary(name, summary);
@@ -337,10 +413,13 @@ impl GrainCase {
         let c = Self::col(&m, col);
         let got = m
             .output()
-            .distinct
+            .measures
             .iter()
-            .find(|d| d.col == c)
-            .map(|d| Self::names(&m, &d.agree_on));
+            .find(|d| d.col == c && d.distinct().is_some())
+            .and_then(|d| match &d.kind {
+                crate::MeasureKind::NonAdditive { agree_on } => Some(Self::names(&m, agree_on)),
+                _ => None,
+            });
         let want = agree_on.map(|a| {
             let mut v: Vec<String> = a.iter().map(|s| s.to_string()).collect();
             v.sort();
@@ -350,6 +429,68 @@ impl GrainCase {
             got,
             want,
             "distinct count {col} for:\n{}\n{}",
+            self.sql,
+            m.plan.display_indent()
+        );
+        self
+    }
+
+    /// `col`'s measure, as text: "non-additive average", "stock over (d)", or "additive"
+    /// when it carries no measure fact.
+    pub fn expect_measure(self, col: &str, want: &str) -> Self {
+        let m = self.run();
+        let c = Self::col(&m, col);
+        let got = match m.output().measures.iter().find(|d| d.col == c) {
+            None => "additive".to_string(),
+            Some(d) => {
+                let what = match &*d.site {
+                    crate::MeasureSite::Distinct(_) => "distinct count".to_string(),
+                    crate::MeasureSite::Computed { what, .. } => what.label().to_string(),
+                    crate::MeasureSite::Declared { .. } => "declared".to_string(),
+                };
+                match &d.kind {
+                    crate::MeasureKind::NonAdditive { .. } => format!("non-additive {what}"),
+                    crate::MeasureKind::Stock { over: Some(over) } => {
+                        format!("stock {what} over ({})", Self::names(&m, over).join(", "))
+                    }
+                    crate::MeasureKind::Stock { over: None } => {
+                        format!("stock {what} over unknown")
+                    }
+                }
+            }
+        };
+        assert_eq!(
+            got,
+            want,
+            "measure {col} for:\n{}\n{}",
+            self.sql,
+            m.plan.display_indent()
+        );
+        self
+    }
+
+    /// `col`'s unit: Some(Some(cols)) when these columns determine it, Some(None) when it
+    /// varies and nothing says how, None when it carries no unit fact.
+    pub fn expect_unit(self, col: &str, want: Option<Option<&[&str]>>) -> Self {
+        let m = self.run();
+        let c = Self::col(&m, col);
+        let got = m
+            .output()
+            .units
+            .iter()
+            .find(|u| u.col == c)
+            .map(|u| u.unit.as_ref().map(|x| Self::names(&m, x)));
+        let want = want.map(|w| {
+            w.map(|a| {
+                let mut v: Vec<String> = a.iter().map(|s| s.to_string()).collect();
+                v.sort();
+                v
+            })
+        });
+        assert_eq!(
+            got,
+            want,
+            "unit of {col} for:\n{}\n{}",
             self.sql,
             m.plan.display_indent()
         );

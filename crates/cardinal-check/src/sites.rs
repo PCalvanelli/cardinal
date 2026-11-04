@@ -1,4 +1,4 @@
-//! Aggregate sites shared by G001 and G008: every aggregate call in a plan, with its
+//! Aggregate sites shared by G001, G008 and G009: every aggregate call in a plan, with its
 //! GROUP BY (or window PARTITION BY) and the plan node it reads.
 
 use cardinal_grain::ColSet;
@@ -28,6 +28,17 @@ pub(crate) fn col_positions(schema: &DFSchema, exprs: &[Expr]) -> Option<ColSet>
         }
     }
     Some(out)
+}
+
+/// Input positions of the GROUP BY / PARTITION BY expressions that are plain columns.
+pub(crate) fn bare_group(schema: &DFSchema, exprs: &[Expr]) -> ColSet {
+    exprs
+        .iter()
+        .filter_map(|e| match unalias(e) {
+            Expr::Column(c) => schema.maybe_index_of_column(c),
+            _ => None,
+        })
+        .collect()
 }
 
 pub(crate) fn unalias(e: &Expr) -> &Expr {

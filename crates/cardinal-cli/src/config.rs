@@ -37,6 +37,16 @@ pub struct Config {
     pub stub: Vec<StubSpec>,
     #[serde(default)]
     pub baseline: BaselineConfig,
+    #[serde(default)]
+    pub guess: GuessConfig,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuessConfig {
+    /// Where `cardinal guess` writes its tests, relative to the project root.
+    /// Default: `<first test-path>/cardinal`, usually tests/cardinal.
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -151,6 +161,10 @@ dialect = "{dialect}"
 
 [baseline]
 path = ".cardinal/baseline.json"
+
+# Where `cardinal guess` writes the dbt tests that check its guesses.
+# [guess]
+# path = "tests/cardinal"
 "#
     )
 }

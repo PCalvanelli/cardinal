@@ -1,0 +1,9 @@
+name: measures
+version: "1.0.0"
+config-version: 2
+profile: measures
+model-paths: ["models"]
+target-path: "target"
+models:
+  measures:
+    +materialized: view

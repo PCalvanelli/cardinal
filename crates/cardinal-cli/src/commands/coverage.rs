@@ -30,6 +30,7 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
     let opts = Options {
         severities: &severities,
         baseline: None,
+        state: None,
         min_severity: Severity::Info,
     };
     let findings = pipeline::collect(&project, &run, &selected, &opts);
@@ -57,31 +58,68 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
                 "reason": r.reason.describe(&display),
                 "unlocks": r.affected.iter().map(|a| a.0.clone()).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
+            "guesses": project.guesses.guesses.iter().map(|g| json!({
+                "hypothesis": g.hypothesis,
+                "description": g.hypothesis.describe(&display),
+                "passed": g.passed,
+                "failures": g.failures,
+                "test": g.test,
+                "generated_at": g.generated_at,
+                "target": g.target,
+            })).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return 0;
     }
     let pct = |a: usize, b: usize| if b == 0 { 100 } else { (a * 100 + b / 2) / b };
     println!(
-        "{} of {} have known grain ({}%); {} planned without E-codes ({}%).",
+        "{} of {} have a known key ({}%); Cardinal could read the SQL of {} ({}%).",
         cov.known,
         plural(cov.models, "model", "models"),
         pct(cov.known, cov.models),
         planned,
         pct(planned, cov.models)
     );
-    if findings.root_causes.is_empty() {
-        return 0;
+    if !findings.root_causes.is_empty() {
+        root_causes(&findings, &display);
     }
+    let log = &project.guesses;
+    if !log.guesses.is_empty() {
+        println!();
+        println!("Cardinal's guesses, after dbt tested them:");
+        for g in &log.guesses {
+            if g.passed {
+                println!(
+                    "  used     {} (dbt test passed on {})",
+                    g.hypothesis.describe(&display),
+                    g.when()
+                );
+            } else {
+                println!(
+                    "  dropped  {}: dbt found {}",
+                    g.hypothesis.refuted(&display),
+                    g.hypothesis.failing_rows(g.failures)
+                );
+            }
+        }
+    }
+    if let Some(h) = super::check::unlock_hint(&project, &findings, false) {
+        println!();
+        println!("Next: {h}");
+    }
+    0
+}
+
+fn root_causes(findings: &crate::pipeline::Findings, display: &dyn Fn(&RelationId) -> String) {
     println!();
-    println!("To cover the rest, in order of models unlocked:");
+    println!("To check the rest, fix these, most models first:");
     let rows: Vec<(String, String, usize)> = findings
         .root_causes
         .iter()
         .map(|r| {
             (
                 display(&r.root),
-                r.reason.describe(&display),
+                r.reason.describe(display),
                 r.affected.len(),
             )
         })
@@ -94,5 +132,4 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
             plural(*n, "model", "models")
         );
     }
-    0
 }

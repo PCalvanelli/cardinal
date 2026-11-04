@@ -1,4 +1,4 @@
-//! G001: aggregation fans out.
+//! G001: a join repeats values that are then added up.
 //!
 //! For an aggregate with group-by columns G over input I, and each non-idempotent
 //! aggregate over a column c: fire if some minimal determinant D of c in I makes
@@ -172,7 +172,7 @@ fn build(
     let primary = cx.locator.label(
         &model.relation,
         call,
-        format!("{col} is determined by {det}"),
+        format!("{col} has one value per {det}"),
     );
     let mut secondary = Vec::new();
     if let Some(j) = input.repeats.get(c).cloned().flatten() {
@@ -182,19 +182,19 @@ fn build(
     let key_names = tuple(&names(schema, &key.cols));
     let subject = input_name(site.input, cx);
     let why = match model.arena.declared_root(key.why) {
-        Some((_, origin)) => format!("from {}", origin.describe()),
-        None => format!("proven: {}", model.arena.explain(key.why)),
+        Some((_, origin)) => format!(" (declared by {})", origin.describe()),
+        None => format!(": {}", model.arena.explain(key.why)),
     };
-    let mut notes = vec![format!("{subject} has grain {key_names}, {why}")];
+    let mut notes = vec![format!("{subject} has one row per {key_names}{why}")];
     if class == AggClass::Unknown {
         notes.push(format!(
-            "Cardinal does not know whether {}() is affected by duplicate rows; declare it in cardinal.toml with idempotent = true if it is not",
+            "Cardinal doesn't know whether repeated rows change {}(); if they don't, mark it idempotent = true in cardinal.toml",
             site.name
         ));
     }
     let evidence = vec![
-        format!("{col} is determined by {det}"),
-        format!("{det} plus the GROUP BY columns is not a key of the aggregate input"),
+        format!("{col} has one value per {det}"),
+        format!("{det} plus the GROUP BY columns don't identify one input row"),
         model.arena.explain(key.why),
     ];
     Diagnostic {
@@ -211,7 +211,7 @@ fn build(
         notes,
         fix: Some(Fix {
             message: format!(
-                "{} {col} per {det} before the join, or read it from a relation at that grain",
+                "{} {col} per {det} before the join, or read it from a table with one row per {det}",
                 site.name
             ),
             replacement: None,

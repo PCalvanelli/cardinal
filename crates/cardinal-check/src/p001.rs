@@ -51,7 +51,7 @@ pub fn contract_findings(
                 severity: Code::P001.default_severity(),
                 relation: model.0.clone(),
                 message: format!(
-                    "exactly once over {} cannot be checked: the model's SQL was not analyzed",
+                    "exactly_once of {} can't be checked: Cardinal couldn't read the model's SQL",
                     display(target)
                 ),
                 primary: locator.label(
@@ -85,32 +85,15 @@ fn not_proven(
 ) {
     let model = &rel.id;
     let of = &v.display;
-    let mut primary: Option<Label> = None;
-    let mut secondary = Vec::new();
-    let mut place = |relation: &RelationId, span, message: String| {
-        let l = locator.label(relation, span, message);
-        if primary.is_none() && relation == model {
-            primary = Some(l);
-        } else if !secondary.contains(&l) {
-            secondary.push(l);
-        }
-    };
-    for r in v
-        .at_least_once
-        .reasons()
-        .iter()
-        .chain(v.at_most_once.reasons())
-    {
-        match r {
-            Reason::Loss { site } => place(
-                &site.model,
-                site.span,
-                format!("rows of {of} may be dropped here"),
-            ),
-            Reason::Repeats { site } => place(&site.relation, site.span, site.message()),
-            _ => {}
-        }
-    }
+    let (primary, secondary) = site_labels(
+        model,
+        of,
+        v.at_least_once
+            .reasons()
+            .iter()
+            .chain(v.at_most_once.reasons()),
+        locator,
+    );
     let lost = !v.at_least_once.is_proven();
     let repeated = !v.at_most_once.is_proven();
     let message = match (lost, repeated) {
@@ -123,7 +106,7 @@ fn not_proven(
     let mut notes = Vec::new();
     if v.site == Site::AggregateInput {
         notes.push(format!(
-            "checked on the rows the aggregate reads, since the output does not carry {of}'s key"
+            "checked on the rows the aggregate reads, since the output doesn't keep {of}'s key"
         ));
     }
     for (name, h) in [
@@ -134,7 +117,7 @@ fn not_proven(
             Half::Proven => notes.push(format!("{name}: proven")),
             Half::NotProven { reasons } => {
                 for r in reasons {
-                    notes.push(format!("{name}: not proven: {}", r.text(of, display)));
+                    notes.push(format!("{name}: not proven, since {}", r.text(of, display)));
                 }
             }
         }
@@ -154,6 +137,38 @@ fn not_proven(
         evidence: vec![],
         fingerprint: normalize_text(&format!("exactly_once {of}")),
     });
+}
+
+/// Labels for the places behind unproven reasons, which may be in upstream models: the
+/// first one in `model` is the primary label, the others secondary.
+pub(crate) fn site_labels<'a>(
+    model: &RelationId,
+    of: &str,
+    reasons: impl IntoIterator<Item = &'a Reason>,
+    locator: &dyn Locator,
+) -> (Option<Label>, Vec<Label>) {
+    let mut primary: Option<Label> = None;
+    let mut secondary = Vec::new();
+    let mut place = |relation: &RelationId, span, message: String| {
+        let l = locator.label(relation, span, message);
+        if primary.is_none() && relation == model {
+            primary = Some(l);
+        } else if !secondary.contains(&l) {
+            secondary.push(l);
+        }
+    };
+    for r in reasons {
+        match r {
+            Reason::Loss { site } => place(
+                &site.model,
+                site.span,
+                format!("rows of {of} may be dropped here"),
+            ),
+            Reason::Repeats { site } => place(&site.relation, site.span, site.message()),
+            _ => {}
+        }
+    }
+    (primary, secondary)
 }
 
 /// The most useful next step for the first unproven reason.
@@ -209,15 +224,17 @@ fn unchecked(
         .iter()
         .map(|(a, s)| {
             let mut line = a.describe(&display);
-            if !s.declared_by.is_empty() {
-                line.push_str(&format!(" (declared by {})", s.declared_by.join(" and ")));
+            if !s.declared_by.is_empty() || s.guessed.is_some() {
+                line.push_str(&format!(" ({})", s.origin()));
             }
-            line.push_str(": unchecked");
+            line.push_str(if s.checked_once() {
+                ": checked once, but that test is no longer in the project"
+            } else {
+                ": unchecked"
+            });
             for c in &s.checked_by {
-                if let cardinal_dbt::CheckedBy::WarnTest(t) = c {
-                    line.push_str(&format!(
-                        "; test {t} only warns, so it never fails the build"
-                    ));
+                if matches!(c, cardinal_dbt::CheckedBy::WarnTest(_)) {
+                    line.push_str(&format!("; {}", cardinal_dbt::weak_check(c)));
                 }
             }
             for c in &s.caveats {
@@ -231,7 +248,7 @@ fn unchecked(
         severity: Code::P002.default_severity(),
         relation: rel.id.0.clone(),
         message: format!(
-            "exactly once over {} rests on {n} unchecked {}",
+            "exactly_once of {} rests on {n} unchecked {}",
             v.display,
             if n == 1 { "assumption" } else { "assumptions" }
         ),

@@ -1,0 +1,13 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+dbt has checked 3 of Cardinal's guesses:
+  passed  app.customers has one row per customer_id (on 2026-11-04)
+  failed  app.events is not unique on event_id: dbt found 2 duplicate or null rows
+          removed tests/cardinal/cardinal_key_app_events_event_id_daa465c3.sql
+  passed  every app.orders.customer_id is in app.customers.customer_id (on 2026-11-04)
+
+Nothing new to guess.
+No other likely key in app.events: declare it in YAML (see cardinal coverage).
+Next: cardinal check (3 of 5 models have a known key now).

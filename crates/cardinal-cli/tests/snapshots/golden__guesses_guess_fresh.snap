@@ -1,0 +1,22 @@
+---
+source: crates/cardinal-cli/tests/golden.rs
+expression: out
+---
+Cardinal guessed keys for 2 tables that keep 4 models from being checked, and 1 reference. It uses none of them until dbt confirms them on your data.
+
+  app.customers  one row per customer_id
+                 why: customer_id is named like the table's id, and orders_with_customer joins on it
+                 lets Cardinal check 2 models that depend on it
+
+  app.events     one row per event_id
+                 why: event_id is named like the table's id
+                 lets Cardinal check 2 models that depend on it
+
+  app.orders     every customer_id is in app.customers.customer_id
+                 why: orders_with_customer joins app.orders to app.customers on it, and drops the rows that have no match
+                 lets Cardinal prove orders_with_customer keeps every row of app.orders
+
+Wrote 3 tests to tests/cardinal/.
+Next: dbt test --select tag:cardinal
+Then run cardinal check. Each guess dbt passes counts as a known key or reference,
+labeled as a guess; each one dbt fails is dropped and never guessed again.

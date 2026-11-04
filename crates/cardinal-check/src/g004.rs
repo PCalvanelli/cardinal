@@ -1,4 +1,4 @@
-//! G004: a model's grain is unknown. Reported once per root cause (for example one
+//! G004: a model's key is unknown. Reported once per root cause (for example one
 //! undeclared source), not once per affected model.
 
 use cardinal_dbt::{Kind, Project, RelationId};
@@ -64,32 +64,32 @@ pub fn unknown_grain(
                 };
                 (
                     format!(
-                        "grain unknown for {n} {plural}: {what} {} declares no key",
+                        "can't check {n} {plural}: {what} {} has no known key",
                         rel.display
                     ),
                     format!(
-                        "declare its grain with meta: {{cardinal: {{grain: [...]}}}} on the {what}, or add a unique test"
+                        "declare its key with meta: {{cardinal: {{grain: [...]}}}} on the {what}, add a unique test, or run cardinal guess"
                     ),
                 )
             }
             UnknownReason::PlanError(_) => (
                 format!(
-                    "grain unknown for {n} {plural}: {} could not be planned",
+                    "can't check {n} {plural}: Cardinal couldn't read {}",
                     rel.display
                 ),
                 format!("fix the E-code reported for {} first", rel.display),
             ),
             UnknownReason::PythonModel(_) => (
                 format!(
-                    "grain unknown for {n} {plural}: {} is a Python model",
+                    "can't check {n} {plural}: {} is a Python model",
                     rel.display
                 ),
-                "declare its grain with meta.cardinal.grain or a unique test".to_string(),
+                "declare its key with meta.cardinal.grain or a unique test".to_string(),
             ),
             UnknownReason::UnsupportedOperator(op) => (
-                format!("grain unknown for {n} {plural}: {op} in {}", rel.display),
+                format!("can't check {n} {plural}: {op} in {}", rel.display),
                 format!(
-                    "declare the grain of {} with a unique test or meta.cardinal.grain",
+                    "declare the key of {} with a unique test or meta.cardinal.grain",
                     rel.display
                 ),
             ),
@@ -110,7 +110,12 @@ pub fn unknown_grain(
                 message: String::new(),
             },
             secondary: vec![],
-            notes: vec![affected_note, reason.describe(&display)],
+            // "X has no known key" is already the message.
+            notes: if matches!(reason, UnknownReason::SourceWithoutKey(_)) {
+                vec![affected_note]
+            } else {
+                vec![affected_note, reason.describe(&display)]
+            },
             fix: Some(Fix {
                 message: help,
                 replacement: None,

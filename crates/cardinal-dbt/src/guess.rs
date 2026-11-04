@@ -1,0 +1,723 @@
+//! Cardinal's guesses: keys and references `cardinal guess` proposes for relations that
+//! declare none, written as dbt singular tests so dbt checks them against the data.
+//!
+//! Each test carries its hypothesis in `config.meta.cardinal.guess`. When
+//! target/run_results.json holds results for those tests, they are merged into
+//! `.cardinal/guesses.json`, since the next `dbt compile` overwrites run_results.json.
+//! A guess dbt passed is then used like a declaration, always labeled as a guess; a
+//! guess dbt failed is never used, and never proposed again.
+
+use crate::project::{DeclOrigin, DeclaredKey, DeclaredReference, NotNullOrigin, Project};
+use crate::project::{RelationId, add_not_null};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// What a guess claims about the data.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Hypothesis {
+    /// No row of `relation` has a null in `columns`, and no two rows agree on them.
+    Key {
+        relation: RelationId,
+        columns: Vec<String>,
+    },
+    /// Every non-null value of `relation.columns` appears in `to.to_columns`.
+    References {
+        relation: RelationId,
+        columns: Vec<String>,
+        to: RelationId,
+        to_columns: Vec<String>,
+    },
+}
+
+fn tuple(cols: &[String]) -> String {
+    if cols.len() == 1 {
+        cols[0].clone()
+    } else {
+        format!("({})", cols.join(", "))
+    }
+}
+
+impl Hypothesis {
+    pub fn relation(&self) -> &RelationId {
+        match self {
+            Hypothesis::Key { relation, .. } | Hypothesis::References { relation, .. } => relation,
+        }
+    }
+
+    /// Read `config.meta.cardinal.guess` of a test node.
+    pub fn from_meta(meta: Option<&Value>) -> Option<Hypothesis> {
+        let g = meta?.get("cardinal")?.get("guess")?;
+        let h: Hypothesis = serde_json::from_value(g.clone()).ok()?;
+        let lower = |v: &[String]| v.iter().map(|c| c.to_lowercase()).collect::<Vec<_>>();
+        let h = match h {
+            Hypothesis::Key { relation, columns } => Hypothesis::Key {
+                relation,
+                columns: lower(&columns),
+            },
+            Hypothesis::References {
+                relation,
+                columns,
+                to,
+                to_columns,
+            } => Hypothesis::References {
+                relation,
+                columns: lower(&columns),
+                to,
+                to_columns: lower(&to_columns),
+            },
+        };
+        let ok = match &h {
+            Hypothesis::Key { columns, .. } => !columns.is_empty(),
+            Hypothesis::References {
+                columns,
+                to_columns,
+                ..
+            } => !columns.is_empty() && columns.len() == to_columns.len(),
+        };
+        ok.then_some(h)
+    }
+
+    /// "app.customers has one row per customer_id"
+    pub fn describe(&self, display: &dyn Fn(&RelationId) -> String) -> String {
+        match self {
+            Hypothesis::Key { relation, columns } => {
+                format!("{} has one row per {}", display(relation), tuple(columns))
+            }
+            Hypothesis::References {
+                relation,
+                columns,
+                to,
+                to_columns,
+            } => format!(
+                "every {}.{} is in {}.{}",
+                display(relation),
+                tuple(columns),
+                display(to),
+                tuple(to_columns)
+            ),
+        }
+    }
+
+    /// What a failed test shows: "app.events is not unique on event_id".
+    pub fn refuted(&self, display: &dyn Fn(&RelationId) -> String) -> String {
+        match self {
+            Hypothesis::Key { relation, columns } => {
+                format!("{} is not unique on {}", display(relation), tuple(columns))
+            }
+            Hypothesis::References {
+                relation,
+                columns,
+                to,
+                to_columns,
+            } => format!(
+                "some {}.{} values are not in {}.{}",
+                display(relation),
+                tuple(columns),
+                display(to),
+                tuple(to_columns)
+            ),
+        }
+    }
+
+    /// The failing rows, in plain words: "duplicate or null rows".
+    pub fn failing_rows(&self, n: u64) -> String {
+        let rows = if n == 1 { "row" } else { "rows" };
+        match self {
+            Hypothesis::Key { .. } => format!("{n} duplicate or null {rows}"),
+            Hypothesis::References { .. } => format!("{n} {rows} with no match"),
+        }
+    }
+}
+
+/// A Cardinal guess test found in the manifest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuessTest {
+    pub unique_id: String,
+    pub name: String,
+    /// Relative to the project root.
+    pub file: String,
+    pub hypothesis: Hypothesis,
+}
+
+/// What dbt found when it ran one guess test.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuessResult {
+    pub hypothesis: Hypothesis,
+    pub passed: bool,
+    /// Rows the test returned.
+    pub failures: u64,
+    /// The dbt test's name.
+    pub test: String,
+    /// run_results.json's `metadata.generated_at`, or the file's modification time when
+    /// it has none (RFC 3339).
+    pub generated_at: String,
+    /// The dbt target the test ran against (run_results.json's `args.target`), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+impl GuessResult {
+    /// The day dbt ran the test: "2026-11-04".
+    pub fn date(&self) -> &str {
+        self.generated_at.get(..10).unwrap_or(&self.generated_at)
+    }
+
+    /// Where and when dbt ran the test: "target prod on 2026-11-04", or just the date.
+    pub fn when(&self) -> String {
+        when(self.target.as_deref(), self.date())
+    }
+
+    /// "dbt test cardinal_key_app_customers_customer_id passed on 2026-11-04"
+    pub fn passed_note(&self) -> GuessNote {
+        GuessNote {
+            test: self.test.clone(),
+            date: self.date().to_string(),
+            target: self.target.clone(),
+        }
+    }
+}
+
+fn when(target: Option<&str>, date: &str) -> String {
+    match target {
+        Some(t) => format!("target {t} on {date}"),
+        None => date.to_string(),
+    }
+}
+
+/// The test that confirmed a guess, and when: part of the guess's declaration origin.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GuessNote {
+    pub test: String,
+    pub date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+impl GuessNote {
+    /// "guessed by Cardinal; dbt test X passed on target prod on 2026-11-04"
+    pub fn describe(&self) -> String {
+        format!(
+            "guessed by Cardinal; dbt test {} passed on {}",
+            self.test,
+            when(self.target.as_deref(), &self.date)
+        )
+    }
+}
+
+/// `.cardinal/guesses.json`: every guess dbt has run, newest result per hypothesis.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuessLog {
+    #[serde(default)]
+    pub guesses: Vec<GuessResult>,
+}
+
+impl GuessLog {
+    pub fn path(root: &Path) -> PathBuf {
+        root.join(".cardinal").join("guesses.json")
+    }
+
+    /// The log at `root`, empty when there is none.
+    pub fn load(root: &Path) -> Result<GuessLog, String> {
+        let p = Self::path(root);
+        match std::fs::read(&p) {
+            Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", p.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(GuessLog::default()),
+            Err(e) => Err(format!("{}: {e}", p.display())),
+        }
+    }
+
+    /// Write atomically, so concurrent runs never read half a file.
+    pub fn save(&self, root: &Path) -> std::io::Result<()> {
+        let p = Self::path(root);
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        let tmp = p.with_extension(format!("json.{}", std::process::id()));
+        let mut body = serde_json::to_string_pretty(self).unwrap_or_default();
+        body.push('\n');
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, &p)
+    }
+
+    pub fn get(&self, h: &Hypothesis) -> Option<&GuessResult> {
+        self.guesses.iter().find(|g| &g.hypothesis == h)
+    }
+
+    /// Add results; for each hypothesis the newest wins. Returns whether anything changed.
+    pub fn merge(&mut self, results: Vec<GuessResult>) -> bool {
+        let mut changed = false;
+        for r in results {
+            match self
+                .guesses
+                .iter_mut()
+                .find(|g| g.hypothesis == r.hypothesis)
+            {
+                Some(g) if newer_or_same(&r.generated_at, &g.generated_at) && *g != r => {
+                    *g = r;
+                    changed = true;
+                }
+                Some(_) => {}
+                None => {
+                    self.guesses.push(r);
+                    changed = true;
+                }
+            }
+        }
+        self.guesses.sort_by(|a, b| a.hypothesis.cmp(&b.hypothesis));
+        changed
+    }
+
+    pub fn passed(&self) -> impl Iterator<Item = &GuessResult> {
+        self.guesses.iter().filter(|g| g.passed)
+    }
+
+    pub fn failed(&self) -> impl Iterator<Item = &GuessResult> {
+        self.guesses.iter().filter(|g| !g.passed)
+    }
+}
+
+/// Whether timestamp `a` is at or after `b`, compared as times. A timestamp that does
+/// not parse is older than any that does; two that don't parse compare as strings.
+fn newer_or_same(a: &str, b: &str) -> bool {
+    match (parse_rfc3339(a), parse_rfc3339(b)) {
+        (Some(x), Some(y)) => x >= y,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => a >= b,
+    }
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (
+        if m <= 2 {
+            yoe + era * 400 + 1
+        } else {
+            yoe + era * 400
+        },
+        m,
+        d,
+    )
+}
+
+/// An RFC 3339 timestamp ("2026-11-04T10:00:00.123Z", "...+02:00", or without an
+/// offset, read as UTC as dbt writes it) as (seconds since the epoch, nanoseconds).
+fn parse_rfc3339(s: &str) -> Option<(i64, u32)> {
+    let s = s.trim();
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') {
+        return None;
+    }
+    if b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let t = s.get(r)?;
+        t.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| t.parse().ok())?
+    };
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, se) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    let mut rest = &s[19..];
+    let mut nanos = 0u32;
+    if let Some(r) = rest.strip_prefix('.') {
+        let n = r.bytes().take_while(u8::is_ascii_digit).count();
+        if n == 0 {
+            return None;
+        }
+        let digits = &r[..n.min(9)];
+        nanos = digits.parse::<u32>().ok()? * 10u32.pow(9 - digits.len() as u32);
+        rest = &r[n..];
+    }
+    let offset = match rest {
+        "" | "Z" | "z" => 0,
+        o if o.len() == 6 && (o.starts_with('+') || o.starts_with('-')) && &o[3..4] == ":" => {
+            let oh: i64 = o[1..3].parse().ok()?;
+            let om: i64 = o[4..6].parse().ok()?;
+            let v = oh * 3600 + om * 60;
+            if o.starts_with('-') { -v } else { v }
+        }
+        _ => return None,
+    };
+    let secs = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - offset;
+    Some((secs, nanos))
+}
+
+/// A file time as RFC 3339 in UTC: "2026-11-04T10:00:00.123456Z".
+fn rfc3339(t: std::time::SystemTime) -> Option<String> {
+    let d = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let secs = d.as_secs() as i64;
+    let (y, m, day) = civil_from_days(secs.div_euclid(86400));
+    let r = secs.rem_euclid(86400);
+    Some(format!(
+        "{y:04}-{m:02}-{day:02}T{:02}:{:02}:{:02}.{:06}Z",
+        r / 3600,
+        r % 3600 / 60,
+        r % 60,
+        d.subsec_micros()
+    ))
+}
+
+/// Results for guess tests in a run_results.json. Tests that errored or were skipped
+/// say nothing about the data, so they are left out. So is a whole run made with
+/// `--empty`: its tests ran on no rows, so a pass proves nothing. `file_time` stands in
+/// for `metadata.generated_at` when the file has none.
+pub fn results_from_run(
+    run_results: &Value,
+    tests: &[GuessTest],
+    file_time: Option<&str>,
+) -> Vec<GuessResult> {
+    let args = run_results.get("args");
+    if args
+        .and_then(|a| a.get("empty"))
+        .is_some_and(|e| e.as_bool() == Some(true) || e.as_str() == Some("true"))
+    {
+        return Vec::new();
+    }
+    let target = args
+        .and_then(|a| a.get("target"))
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    let generated_at = run_results
+        .pointer("/metadata/generated_at")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+        .or(file_time)
+        .unwrap_or("")
+        .to_string();
+    let by_id: BTreeMap<&str, &GuessTest> =
+        tests.iter().map(|t| (t.unique_id.as_str(), t)).collect();
+    let mut out = Vec::new();
+    for r in run_results
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(t) = r
+            .get("unique_id")
+            .and_then(Value::as_str)
+            .and_then(|id| by_id.get(id))
+        else {
+            continue;
+        };
+        let passed = match r.get("status").and_then(Value::as_str) {
+            Some("pass") => true,
+            Some("fail" | "warn") => false,
+            _ => continue,
+        };
+        out.push(GuessResult {
+            hypothesis: t.hypothesis.clone(),
+            passed,
+            failures: r.get("failures").and_then(Value::as_u64).unwrap_or(0),
+            test: t.name.clone(),
+            generated_at: generated_at.clone(),
+            target: target.clone(),
+        });
+    }
+    out
+}
+
+impl Project {
+    /// Merge guess results from target/run_results.json into `.cardinal/guesses.json`.
+    pub(crate) fn record_guess_results(&mut self) -> Result<(), String> {
+        let path = self.target_dir.join("run_results.json");
+        if self.guess_tests.is_empty() || !path.is_file() {
+            return Ok(());
+        }
+        let Ok(v) = std::fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string()))
+        else {
+            return Ok(());
+        };
+        let file_time = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(rfc3339);
+        let results = results_from_run(&v, &self.guess_tests, file_time.as_deref());
+        if !results.is_empty() && self.guesses.merge(results) {
+            self.guesses
+                .save(&self.root)
+                .map_err(|e| format!("{}: {e}", GuessLog::path(&self.root).display()))?;
+        }
+        Ok(())
+    }
+
+    /// Use every guess dbt passed as a declaration with a guess origin. A guess about a
+    /// relation or column that no longer exists is skipped.
+    pub(crate) fn apply_guesses(&mut self) {
+        let passed: Vec<GuessResult> = self.guesses.passed().cloned().collect();
+        for g in passed {
+            let note = g.passed_note();
+            let has_cols = |p: &Project, id: &RelationId, cols: &[String]| {
+                p.get(id).is_some_and(|r| {
+                    r.columns.is_empty()
+                        || cols.iter().all(|c| r.columns.iter().any(|x| &x.name == c))
+                })
+            };
+            match &g.hypothesis {
+                Hypothesis::Key { relation, columns } => {
+                    if !has_cols(self, relation, columns) {
+                        continue;
+                    }
+                    let rel = self.relations.get_mut(relation).unwrap();
+                    let mut want = columns.clone();
+                    want.sort();
+                    let known = rel.declared_keys.iter().any(|k| {
+                        let mut c = k.cols.clone();
+                        c.sort();
+                        c == want
+                    });
+                    if !known {
+                        rel.declared_keys.push(DeclaredKey {
+                            cols: columns.clone(),
+                            origin: DeclOrigin::Guess(note.clone()),
+                        });
+                    }
+                    for c in columns {
+                        add_not_null(
+                            &mut rel.not_null,
+                            c.clone(),
+                            NotNullOrigin::Guess(note.clone()),
+                        );
+                    }
+                }
+                Hypothesis::References {
+                    relation,
+                    columns,
+                    to,
+                    to_columns,
+                } => {
+                    if !has_cols(self, relation, columns) || !has_cols(self, to, to_columns) {
+                        continue;
+                    }
+                    let rel = self.relations.get_mut(relation).unwrap();
+                    let known = rel
+                        .references
+                        .iter()
+                        .any(|r| &r.cols == columns && &r.to == to && &r.to_cols == to_columns);
+                    if !known {
+                        rel.references.push(DeclaredReference {
+                            cols: columns.clone(),
+                            to: to.clone(),
+                            to_cols: to_columns.clone(),
+                            guess: Some(note),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn key(rel: &str, cols: &[&str]) -> Hypothesis {
+        Hypothesis::Key {
+            relation: RelationId(rel.into()),
+            columns: cols.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    fn result(h: Hypothesis, passed: bool, at: &str) -> GuessResult {
+        GuessResult {
+            hypothesis: h,
+            passed,
+            failures: if passed { 0 } else { 3 },
+            test: "t".into(),
+            generated_at: at.into(),
+            target: None,
+        }
+    }
+
+    #[test]
+    fn reads_hypothesis_from_test_meta() {
+        let meta = json!({"cardinal": {"guess": {
+            "kind": "key", "relation": "source.p.app.customers", "columns": ["Customer_ID"]
+        }}});
+        assert_eq!(
+            Hypothesis::from_meta(Some(&meta)),
+            Some(key("source.p.app.customers", &["customer_id"]))
+        );
+        let bad = json!({"cardinal": {"guess": {"kind": "key", "relation": "x", "columns": []}}});
+        assert_eq!(Hypothesis::from_meta(Some(&bad)), None);
+        let r = json!({"cardinal": {"guess": {"kind": "references", "relation": "a",
+            "columns": ["x"], "to": "b", "to_columns": ["y", "z"]}}});
+        assert_eq!(
+            Hypothesis::from_meta(Some(&r)),
+            None,
+            "column counts differ"
+        );
+        assert_eq!(Hypothesis::from_meta(None), None);
+    }
+
+    #[test]
+    fn merge_is_idempotent_and_newer_wins() {
+        let mut log = GuessLog::default();
+        let h = key("a", &["id"]);
+        assert!(log.merge(vec![result(h.clone(), false, "2026-11-01T00:00:00Z")]));
+        assert!(!log.merge(vec![result(h.clone(), false, "2026-11-01T00:00:00Z")]));
+        assert!(
+            !log.merge(vec![result(h.clone(), true, "2026-10-01T00:00:00Z")]),
+            "an older result never replaces a newer one"
+        );
+        assert!(log.merge(vec![result(h.clone(), true, "2026-11-04T09:00:00Z")]));
+        assert_eq!(log.guesses.len(), 1);
+        assert!(log.get(&h).unwrap().passed);
+        assert_eq!(log.get(&h).unwrap().date(), "2026-11-04");
+        assert!(log.merge(vec![result(
+            key("b", &["id"]),
+            true,
+            "2026-11-04T09:00:00Z"
+        )]));
+        assert_eq!(log.guesses.len(), 2);
+    }
+
+    #[test]
+    fn reads_run_results() {
+        let tests = vec![
+            GuessTest {
+                unique_id: "test.p.k".into(),
+                name: "k".into(),
+                file: "tests/cardinal/k.sql".into(),
+                hypothesis: key("a", &["id"]),
+            },
+            GuessTest {
+                unique_id: "test.p.e".into(),
+                name: "e".into(),
+                file: "tests/cardinal/e.sql".into(),
+                hypothesis: key("b", &["id"]),
+            },
+        ];
+        let rr = json!({
+            "metadata": {"generated_at": "2026-11-04T10:00:00.123Z"},
+            "results": [
+                {"unique_id": "test.p.k", "status": "pass", "failures": 0},
+                {"unique_id": "test.p.e", "status": "error", "failures": null},
+                {"unique_id": "test.p.other", "status": "fail", "failures": 2},
+                {"unique_id": "model.p.m", "status": "success"}
+            ]
+        });
+        let r = results_from_run(&rr, &tests, None);
+        assert_eq!(r.len(), 1, "errors and unrelated nodes say nothing: {r:?}");
+        assert!(r[0].passed);
+        assert_eq!(r[0].test, "k");
+        let rr = json!({"metadata": {"generated_at": "x"},
+            "results": [{"unique_id": "test.p.e", "status": "fail", "failures": 12}]});
+        let r = results_from_run(&rr, &tests, None);
+        assert_eq!((r[0].passed, r[0].failures), (false, 12));
+    }
+
+    fn one_test() -> Vec<GuessTest> {
+        vec![GuessTest {
+            unique_id: "test.p.k".into(),
+            name: "k".into(),
+            file: "tests/cardinal/k.sql".into(),
+            hypothesis: key("a", &["id"]),
+        }]
+    }
+
+    #[test]
+    fn empty_runs_confirm_nothing() {
+        let rr = json!({
+            "metadata": {"generated_at": "2026-11-04T10:00:00Z"},
+            "args": {"empty": true, "target": "dev"},
+            "results": [{"unique_id": "test.p.k", "status": "pass", "failures": 0}]
+        });
+        assert!(results_from_run(&rr, &one_test(), None).is_empty());
+    }
+
+    #[test]
+    fn records_target_and_shows_it() {
+        let rr = json!({
+            "metadata": {"generated_at": "2026-11-04T10:00:00Z"},
+            "args": {"empty": false, "target": "prod"},
+            "results": [{"unique_id": "test.p.k", "status": "pass", "failures": 0}]
+        });
+        let r = results_from_run(&rr, &one_test(), None);
+        assert_eq!(r[0].target.as_deref(), Some("prod"));
+        assert_eq!(
+            r[0].passed_note().describe(),
+            "guessed by Cardinal; dbt test k passed on target prod on 2026-11-04"
+        );
+        let mut no_target = r[0].clone();
+        no_target.target = None;
+        assert_eq!(
+            no_target.passed_note().describe(),
+            "guessed by Cardinal; dbt test k passed on 2026-11-04"
+        );
+    }
+
+    #[test]
+    fn missing_generated_at_falls_back_to_file_time() {
+        let rr = json!({"results": [{"unique_id": "test.p.k", "status": "pass", "failures": 0}]});
+        let r = results_from_run(&rr, &one_test(), Some("2026-11-05T08:00:00.000000Z"));
+        assert_eq!(r[0].generated_at, "2026-11-05T08:00:00.000000Z");
+        let mut log = GuessLog::default();
+        log.merge(vec![result(
+            key("a", &["id"]),
+            false,
+            "2026-11-04T09:00:00Z",
+        )]);
+        assert!(
+            log.merge(r),
+            "a newer file-time result replaces the older one"
+        );
+        assert!(log.get(&key("a", &["id"])).unwrap().passed);
+    }
+
+    #[test]
+    fn timestamps_compare_as_times() {
+        // Same instant, different offsets and precision.
+        assert!(newer_or_same(
+            "2026-11-04T10:00:00+02:00",
+            "2026-11-04T08:00:00Z"
+        ));
+        assert!(newer_or_same(
+            "2026-11-04T08:00:00Z",
+            "2026-11-04T10:00:00+02:00"
+        ));
+        // As strings "...T09..." > "...T08:30...+..." but as times it is earlier.
+        assert!(!newer_or_same(
+            "2026-11-04T09:00:00Z",
+            "2026-11-04T08:30:00-01:00"
+        ));
+        assert!(newer_or_same(
+            "2026-11-04T10:00:00.5Z",
+            "2026-11-04T10:00:00.123Z"
+        ));
+        assert!(newer_or_same("2026-11-04T10:00:00Z", ""));
+        assert!(!newer_or_same("", "2026-11-04T10:00:00Z"));
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_micros(1_793_786_400_123_456);
+        let s = rfc3339(t).unwrap();
+        assert_eq!(parse_rfc3339(&s), Some((1_793_786_400, 123_456_000)));
+        assert_eq!(s.get(..10), Some("2026-11-04"));
+    }
+}
