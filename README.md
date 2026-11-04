@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/built%20for-dbt-FF694B?logo=dbt&logoColor=white" alt="Built for dbt">
 </p>
 
-> **Beta (v0.1.0-beta.3).** Output, flags and config may change between beta releases.
+> **Beta (v0.1.0-beta.4).** Output, flags and config may change between beta releases.
 
 Cardinal reads the SQL that dbt compiles and tells you, before anything runs, where a
 model can count a row twice, lose a row, or add up numbers that don't add up. It never
