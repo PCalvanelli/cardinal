@@ -81,3 +81,48 @@ pub fn plan_failure(
         fingerprint: normalize_text(&failure.map(|f| f.message.clone()).unwrap_or_default()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cardinal_dbt::RelationId;
+    use cardinal_diag::Label;
+    use cardinal_sql::SqlSpan;
+
+    struct Plain;
+
+    impl Locator for Plain {
+        fn label(&self, relation: &RelationId, span: Option<SqlSpan>, message: String) -> Label {
+            Label {
+                file: relation.0.clone(),
+                span,
+                message,
+            }
+        }
+        fn display(&self, relation: &RelationId) -> String {
+            relation.0.clone()
+        }
+    }
+
+    /// `cardinal init` reads the function back out of the E003 message it is written in.
+    #[test]
+    fn unknown_function_round_trips() {
+        let rel = cardinal_grain::testing::test_relation(&RelationId("model.t.m".into()), "m");
+        let failure = |kind| PlanFailure {
+            kind,
+            message: "x".into(),
+            span: None,
+        };
+        let d = plan_failure(
+            &rel,
+            Some(&failure(PlanFailureKind::UnresolvedFunction(
+                "my_udf".into(),
+            ))),
+            &Plain,
+        );
+        assert_eq!(d.code, Code::E003);
+        assert_eq!(unknown_function(&d), Some("my_udf"));
+        let d = plan_failure(&rel, Some(&failure(PlanFailureKind::Parse)), &Plain);
+        assert_eq!(unknown_function(&d), None);
+    }
+}
