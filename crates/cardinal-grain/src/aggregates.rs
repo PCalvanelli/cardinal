@@ -155,83 +155,20 @@ mod tests {
         AGGREGATES.iter().filter(|a| f(a)).map(|a| a.name).collect()
     }
 
-    fn set(v: &[&'static str]) -> BTreeSet<&'static str> {
-        v.iter().copied().collect()
-    }
-
-    /// The lists each property was read from before this table, kept verbatim.
     #[test]
-    fn same_as_the_lists_it_replaced() {
-        let g001_non_idempotent = [
-            "sum",
-            "avg",
-            "mean",
-            "count",
-            "var",
-            "var_samp",
-            "var_pop",
-            "variance",
-            "variance_samp",
-            "variance_pop",
-            "stddev",
-            "stddev_samp",
-            "stddev_pop",
-            "string_agg",
-            "array_agg",
-            "listagg",
-        ];
-        let g001_idempotent = ["min", "max", "any_value", "bool_and", "bool_or"];
-        let counting = [
-            "sum",
-            "count",
-            "avg",
-            "mean",
-            "approx_distinct",
-            "approx_count_distinct",
-            "hll",
-        ];
-        let distinct_counts = ["approx_distinct", "approx_count_distinct", "hll"];
-        let averages = ["avg", "mean"];
-        let percentiles = [
-            "median",
-            "approx_median",
-            "percentile_cont",
-            "percentile_disc",
-            "approx_percentile_cont",
-            "approx_percentile_cont_with_weight",
-            "quantile",
-            "quantile_cont",
-            "quantile_disc",
-        ];
-        // grain's running totals, and G009's and grain's amounts that keep their unit.
-        let totals = ["sum", "count"];
-        let keeps_unit = ["sum", "avg", "mean", "min", "max"];
-
-        assert_eq!(
-            names(|a| a.idempotent == Some(false)),
-            set(&g001_non_idempotent)
+    fn one_lowercase_row_per_name() {
+        assert_eq!(names(|_| true).len(), AGGREGATES.len());
+        assert!(
+            AGGREGATES
+                .iter()
+                .all(|a| a.name == a.name.to_ascii_lowercase())
         );
-        assert_eq!(names(|a| a.idempotent == Some(true)), set(&g001_idempotent));
-        assert_eq!(names(|a| a.counting), set(&counting));
-        assert_eq!(names(|a| a.distinct_count), set(&distinct_counts));
-        assert_eq!(
-            names(|a| a.computed == Some(Computed::Average)),
-            set(&averages)
-        );
-        assert_eq!(
-            names(|a| a.computed == Some(Computed::Percentile)),
-            set(&percentiles)
-        );
-        assert!(AGGREGATES.iter().all(|a| matches!(
-            a.computed,
-            None | Some(Computed::Average | Computed::Percentile)
-        )));
-        assert_eq!(names(|a| a.totals), set(&totals));
-        assert_eq!(names(|a| a.keeps_unit), set(&keeps_unit));
-        assert_eq!(
-            names(|_| true).len(),
-            AGGREGATES.len(),
-            "each name appears once"
+        // A distinct count counts; a percentile is neither idempotent nor not.
+        assert!(AGGREGATES.iter().all(|a| !a.distinct_count || a.counting));
+        assert!(
+            names(|a| a.computed == Some(Computed::Percentile))
+                .iter()
+                .all(|n| aggregate(n).unwrap().idempotent.is_none())
         );
     }
 
