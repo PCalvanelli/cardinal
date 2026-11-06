@@ -19,7 +19,7 @@ use cardinal_sql::datafusion_expr::utils::split_conjunction;
 use cardinal_sql::datafusion_expr::{
     BinaryExpr, Expr, LogicalPlan, Operator, WindowFunctionDefinition,
 };
-use cardinal_sql::{CardinalTable, SourceText, SqlSpan};
+use cardinal_sql::{CardinalTable, SourceText, SqlSpan, Tokens};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -953,52 +953,24 @@ impl Analyzer<'_> {
 
     /// Where output column `name` is computed (`<expr> as name`), for labels on a column
     /// the plan rewrote, such as a ratio of two aggregates: the expression before `as` on
-    /// that line, or the whole line when the expression ends on an earlier one. Skips
-    /// `--` comments, and allows any whitespace and quotes around the alias.
+    /// that line, or the whole line when the expression ends on an earlier one. Comments
+    /// and strings do not count, and the alias may be quoted.
     fn alias_line(&self, name: &str) -> Option<SqlSpan> {
         let text = SourceText::new(self.sql);
-        let lower = self.sql.to_ascii_lowercase();
-        let name = name.to_ascii_lowercase();
-        let ident = |c: char| c.is_alphanumeric() || c == '_';
-        let bytes = lower.as_bytes();
-        let mut from = 0;
-        while let Some(i) = lower[from..].find("as") {
-            let at = from + i;
-            from = at + 2;
-            if lower[..at].chars().next_back().is_some_and(ident) {
-                continue;
-            }
-            let mut k = at + 2;
-            if !bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
-                continue;
-            }
-            while bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
-                k += 1;
-            }
-            let quote = matches!(bytes.get(k), Some(b'"' | b'`'));
-            if quote {
-                k += 1;
-            }
-            if !lower[k..].starts_with(&name) {
-                continue;
-            }
-            let end = k + name.len();
-            if !quote && lower[end..].chars().next().is_some_and(ident) {
-                continue;
-            }
-            let line_start = lower[..at].rfind('\n').map_or(0, |n| n + 1);
-            if lower[line_start..at].contains("--") {
-                continue;
-            }
-            let (line, _) = self.line_of(Some(text.span(at, end)))?;
-            let expr_start = text.offset(line.start);
-            let expr = self.sql[expr_start.min(at)..at].trim_end();
-            if expr.is_empty() {
-                return Some(line);
-            }
-            return Some(text.span(expr_start, expr_start + expr.len()));
+        let t = Tokens::new(self.sql);
+        let alias = |i: usize| t.name(i).is_some_and(|n| n.eq_ignore_ascii_case(name));
+        let (kw, alias) = t
+            .words("as")
+            .find_map(|i| t.next(i).filter(|&n| alias(n)).map(|n| (i, n)))?;
+        let at = t.get(kw).start;
+        let end = t.name_range(alias)?.end;
+        let (line, _) = self.line_of(Some(text.span(at, end)))?;
+        let expr_start = text.offset(line.start);
+        let expr = self.sql[expr_start.min(at)..at].trim_end();
+        if expr.is_empty() {
+            return Some(line);
         }
-        None
+        Some(text.span(expr_start, expr_start + expr.len()))
     }
 
     fn filter(&mut self, f: &Filter) -> RelationFacts {
@@ -2392,25 +2364,21 @@ impl Analyzer<'_> {
     }
 
     /// Fallback when no join key carries a span (USING joins): the first unused JOIN
-    /// clause in the text that names the right side.
+    /// clause in the text that names the right side on its line.
     fn find_join_span(&self, text: &SourceText<'_>, right: &LogicalPlan) -> Option<SqlSpan> {
         let names = side_aliases(right);
-        let lower = text.text.to_ascii_lowercase();
-        let mut from = 0;
-        while let Some(i) = lower[from..].find("join") {
-            let at = from + i;
-            from = at + 4;
-            let line_end = lower[at..]
+        let t = Tokens::new(text.text);
+        for join in t.words("join") {
+            let at = t.get(join).end;
+            let line_end = text.text[at..]
                 .find('\n')
-                .map(|n| at + n)
-                .unwrap_or(lower.len());
-            let clause = &lower[at..line_end];
-            if names.iter().any(|n| {
-                clause
-                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .any(|w| w == n)
-            }) {
-                let s = text.join_clause_before(text.span(at + 4, at + 4))?;
+                .map_or(text.text.len(), |n| at + n);
+            let names_right = (join + 1..t.len())
+                .take_while(|&k| t.get(k).start < line_end)
+                .filter_map(|k| t.name(k))
+                .any(|w| names.iter().any(|n| w.eq_ignore_ascii_case(n)));
+            if names_right {
+                let s = text.join_clause_before(text.span(at, at))?;
                 if !self.used_join_spans.contains(&s) {
                     return Some(s);
                 }

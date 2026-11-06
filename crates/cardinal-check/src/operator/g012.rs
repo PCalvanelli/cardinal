@@ -8,14 +8,14 @@
 //! (`select customer_id from a union select customer_id from b`) is a deliberate
 //! de-duplication and is not reported.
 
-use crate::{Check, CheckContext, tuple, word_offsets};
+use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, normalize_text};
 use cardinal_grain::{AnalyzedModel, RelationFacts};
 use cardinal_sql::datafusion_common::arrow::datatypes::DataType;
 use cardinal_sql::datafusion_common::tree_node::TreeNodeRecursion;
 use cardinal_sql::datafusion_expr::LogicalPlan;
 use cardinal_sql::datafusion_expr::logical_plan::{Distinct, Union};
-use cardinal_sql::{SourceText, SqlSpan};
+use cardinal_sql::{SourceText, SqlSpan, Tokens};
 
 pub struct UnionMergesRows;
 
@@ -155,7 +155,7 @@ fn check_union(
             ),
             primary: cx.locator.label(
                 &model.relation,
-                union_span(&model.sql, &text, nth),
+                union_span(&text, nth),
                 "UNION keeps one copy of each set of equal rows".into(),
             ),
             secondary: vec![],
@@ -172,19 +172,10 @@ fn check_union(
 }
 
 /// The `nth` UNION in the SQL that is not UNION ALL.
-fn union_span(sql: &str, text: &SourceText<'_>, nth: usize) -> Option<SqlSpan> {
-    let lower = sql.to_ascii_lowercase();
-    word_offsets(sql, "union")
-        .into_iter()
-        .filter(|at| {
-            let rest = lower[at + 5..].trim_start();
-            let all = rest.starts_with("all")
-                && !rest[3..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
-            !all
-        })
+fn union_span(text: &SourceText<'_>, nth: usize) -> Option<SqlSpan> {
+    let t = Tokens::new(text.text);
+    t.words("union")
+        .filter(|&i| !t.next(i).is_some_and(|n| t.is_word(n, "all")))
         .nth(nth)
-        .map(|at| text.span(at, at + 5))
+        .map(|i| text.span(t.get(i).start, t.get(i).end))
 }

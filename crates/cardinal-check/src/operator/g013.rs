@@ -8,7 +8,7 @@
 //! preserved side, and the count counts every row: `count(*)`, `count(1)`, or a column
 //! of the preserved side. `count(o.order_id)` skips the nulls and is correct.
 
-use crate::{Check, CheckContext, word_offsets};
+use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
 use cardinal_grain::AnalyzedModel;
 use cardinal_sql::datafusion_common::tree_node::TreeNodeRecursion;
@@ -16,7 +16,8 @@ use cardinal_sql::datafusion_expr::expr::AggregateFunction;
 use cardinal_sql::datafusion_expr::logical_plan::{Aggregate, Filter, Join, JoinType};
 use cardinal_sql::datafusion_expr::utils::split_conjunction;
 use cardinal_sql::datafusion_expr::{BinaryExpr, Expr, LogicalPlan, Operator};
-use cardinal_sql::{SourceText, SqlSpan};
+use cardinal_sql::lex::Kind;
+use cardinal_sql::{SourceText, SqlSpan, Tokens};
 
 pub struct CountOuterJoin;
 
@@ -154,7 +155,7 @@ fn check_aggregate(
         let arg = unalias(&params.args[0]);
         let (span, written) = match arg {
             Expr::Literal(v, _) if !v.is_null() => {
-                let span = literal_count_span(&model.sql, &text, used);
+                let span = literal_count_span(&text, used);
                 (span, span.map(|s| text.slice(s).to_string()))
             }
             Expr::Column(c) if side_of(&a.input, arg, j) == Some(Some(!filled_right)) => {
@@ -240,25 +241,28 @@ fn filled_column(j: &Join, filled_right: bool) -> Option<String> {
 }
 
 /// The next `count(*)` or `count(<number>)` in the SQL not yet used by another finding.
-fn literal_count_span(sql: &str, text: &SourceText<'_>, used: &mut Vec<usize>) -> Option<SqlSpan> {
-    for at in word_offsets(sql, "count") {
+fn literal_count_span(text: &SourceText<'_>, used: &mut Vec<usize>) -> Option<SqlSpan> {
+    let t = Tokens::new(text.text);
+    for i in t.words("count") {
+        let at = t.get(i).start;
         if used.contains(&at) {
             continue;
         }
-        let rest = &sql[at + 5..];
-        let open = rest.len() - rest.trim_start().len();
-        let rest = rest.trim_start();
-        let Some(inner) = rest.strip_prefix('(') else {
+        let Some(arg) = t
+            .next(i)
+            .filter(|&o| t.is_punct(o, '('))
+            .and_then(|o| t.next(o))
+        else {
             continue;
         };
-        let Some(close) = inner.find(')') else {
+        let literal = t.is_punct(arg, '*')
+            || (t.get(arg).kind == Kind::Number && t.text(arg).bytes().all(|b| b.is_ascii_digit()));
+        let Some(close) = t.next(arg).filter(|&c| t.is_punct(c, ')')) else {
             continue;
         };
-        let arg = inner[..close].trim();
-        if arg == "*" || (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit())) {
+        if literal {
             used.push(at);
-            let end = at + 5 + open + 1 + close + 1;
-            return Some(text.span(at, end));
+            return Some(text.span(at, t.get(close).end));
         }
     }
     None

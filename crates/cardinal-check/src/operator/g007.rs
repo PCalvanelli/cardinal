@@ -121,7 +121,7 @@ fn check(
         .map(|k| (k, k.cols.difference(&reach).copied().collect::<ColSet>()))
         .min_by_key(|(k, add)| (add.len(), k.cols.len()))?;
 
-    let span = over_span(text, &model.sql, wf);
+    let span = over_span(text, wf);
     let p = tuple(&names(schema, &partition));
     let o = tuple(&names(schema, &order));
     let within = if partition.is_empty() {
@@ -174,7 +174,7 @@ fn check(
 }
 
 /// `row_number() over (...)`, found from a column inside the OVER clause.
-fn over_span(text: &SourceText<'_>, sql: &str, wf: &WindowFunction) -> Option<SqlSpan> {
+fn over_span(text: &SourceText<'_>, wf: &WindowFunction) -> Option<SqlSpan> {
     let inner = wf
         .params
         .partition_by
@@ -185,30 +185,5 @@ fn over_span(text: &SourceText<'_>, sql: &str, wf: &WindowFunction) -> Option<Sq
         .and_then(|s| SqlSpan::from_df(&s))?;
     let over = text.enclosing_call(inner, "over")?;
     // Extend back over the call before OVER: `row_number()` or `lag(status, 1)`.
-    let bytes = sql.as_bytes();
-    let mut k = text.offset(over.start);
-    while k > 0 && bytes[k - 1].is_ascii_whitespace() {
-        k -= 1;
-    }
-    if k == 0 || bytes[k - 1] != b')' {
-        return Some(over);
-    }
-    let mut depth = 0usize;
-    while k > 0 {
-        k -= 1;
-        match bytes[k] {
-            b')' => depth += 1,
-            b'(' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    while k > 0 && (bytes[k - 1].is_ascii_alphanumeric() || bytes[k - 1] == b'_') {
-        k -= 1;
-    }
-    Some(text.span(k, text.offset(over.end)))
+    Some(text.with_call_before(over))
 }
