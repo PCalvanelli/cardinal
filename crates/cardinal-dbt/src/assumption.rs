@@ -8,6 +8,7 @@
 //! says which ones a dbt test or the warehouse checks.
 
 use crate::guess::GuessNote;
+use crate::names::tuple;
 use crate::project::{DeclOrigin, Kind, NotNullOrigin, Project, Relation, RelationId, TestKind};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -65,14 +66,6 @@ impl Assumption {
                 tuple(to_cols)
             ),
         }
-    }
-}
-
-fn tuple(cols: &[String]) -> String {
-    if cols.len() == 1 {
-        cols[0].clone()
-    } else {
-        format!("({})", cols.join(", "))
     }
 }
 

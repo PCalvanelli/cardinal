@@ -114,7 +114,12 @@ pub fn run(dir: Option<PathBuf>, force: bool) -> u8 {
 
     let loaded = cardinal_dbt::load_project(&root);
     let project = match loaded {
-        Ok(p) => {
+        Ok(mut p) => {
+            if let Err(e) = p.save_guesses() {
+                p.warnings.push(LoadWarning::Guesses(format!(
+                    "could not record guess results: {e}"
+                )));
+            }
             artifact_items(&mut list, &p);
             Some(p)
         }

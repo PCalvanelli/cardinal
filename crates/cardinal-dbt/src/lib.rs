@@ -4,6 +4,7 @@
 pub mod artifacts;
 pub mod assumption;
 pub mod guess;
+mod names;
 pub mod profile;
 pub mod project;
 pub mod select;

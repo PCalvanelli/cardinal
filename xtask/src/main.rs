@@ -196,7 +196,7 @@ fn run_guesses(path: &Path) -> Result<()> {
         .args(["docs", "generate", "--profiles-dir", "."])
         .current_dir(path))?;
     std::fs::write(&results, saved)?;
-    // Loading the project records the results in .cardinal/guesses.json.
+    // Any command records the results in .cardinal/guesses.json when it loads the project.
     cardinal_dbt_load(path)
 }
 

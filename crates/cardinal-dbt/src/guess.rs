@@ -7,8 +7,7 @@
 //! A guess dbt passed is then used like a declaration, always labeled as a guess; a
 //! guess dbt failed is never used, and never proposed again.
 
-use crate::project::{DeclOrigin, DeclaredKey, DeclaredReference, NotNullOrigin, Project};
-use crate::project::{RelationId, add_not_null};
+use crate::names::{RelationId, tuple};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -30,14 +29,6 @@ pub enum Hypothesis {
         to: RelationId,
         to_columns: Vec<String>,
     },
-}
-
-fn tuple(cols: &[String]) -> String {
-    if cols.len() == 1 {
-        cols[0].clone()
-    } else {
-        format!("({})", cols.join(", "))
-    }
 }
 
 impl Hypothesis {
@@ -366,7 +357,7 @@ fn parse_rfc3339(s: &str) -> Option<(i64, u32)> {
 }
 
 /// A file time as RFC 3339 in UTC: "2026-11-04T10:00:00.123456Z".
-fn rfc3339(t: std::time::SystemTime) -> Option<String> {
+pub(crate) fn rfc3339(t: std::time::SystemTime) -> Option<String> {
     let d = t.duration_since(std::time::UNIX_EPOCH).ok()?;
     let secs = d.as_secs() as i64;
     let (y, m, day) = civil_from_days(secs.div_euclid(86400));
@@ -439,99 +430,6 @@ pub fn results_from_run(
         });
     }
     out
-}
-
-impl Project {
-    /// Merge guess results from target/run_results.json into `.cardinal/guesses.json`.
-    pub(crate) fn record_guess_results(&mut self) -> Result<(), String> {
-        let path = self.target_dir.join("run_results.json");
-        if self.guess_tests.is_empty() || !path.is_file() {
-            return Ok(());
-        }
-        let Ok(v) = std::fs::read(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string()))
-        else {
-            return Ok(());
-        };
-        let file_time = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(rfc3339);
-        let results = results_from_run(&v, &self.guess_tests, file_time.as_deref());
-        if !results.is_empty() && self.guesses.merge(results) {
-            self.guesses
-                .save(&self.root)
-                .map_err(|e| format!("{}: {e}", GuessLog::path(&self.root).display()))?;
-        }
-        Ok(())
-    }
-
-    /// Use every guess dbt passed as a declaration with a guess origin. A guess about a
-    /// relation or column that no longer exists is skipped.
-    pub(crate) fn apply_guesses(&mut self) {
-        let passed: Vec<GuessResult> = self.guesses.passed().cloned().collect();
-        for g in passed {
-            let note = g.passed_note();
-            let has_cols = |p: &Project, id: &RelationId, cols: &[String]| {
-                p.get(id).is_some_and(|r| {
-                    r.columns.is_empty()
-                        || cols.iter().all(|c| r.columns.iter().any(|x| &x.name == c))
-                })
-            };
-            match &g.hypothesis {
-                Hypothesis::Key { relation, columns } => {
-                    if !has_cols(self, relation, columns) {
-                        continue;
-                    }
-                    let rel = self.relations.get_mut(relation).unwrap();
-                    let mut want = columns.clone();
-                    want.sort();
-                    let known = rel.declared_keys.iter().any(|k| {
-                        let mut c = k.cols.clone();
-                        c.sort();
-                        c == want
-                    });
-                    if !known {
-                        rel.declared_keys.push(DeclaredKey {
-                            cols: columns.clone(),
-                            origin: DeclOrigin::Guess(note.clone()),
-                        });
-                    }
-                    for c in columns {
-                        add_not_null(
-                            &mut rel.not_null,
-                            c.clone(),
-                            NotNullOrigin::Guess(note.clone()),
-                        );
-                    }
-                }
-                Hypothesis::References {
-                    relation,
-                    columns,
-                    to,
-                    to_columns,
-                } => {
-                    if !has_cols(self, relation, columns) || !has_cols(self, to, to_columns) {
-                        continue;
-                    }
-                    let rel = self.relations.get_mut(relation).unwrap();
-                    let known = rel
-                        .references
-                        .iter()
-                        .any(|r| &r.cols == columns && &r.to == to && &r.to_cols == to_columns);
-                    if !known {
-                        rel.references.push(DeclaredReference {
-                            cols: columns.clone(),
-                            to: to.clone(),
-                            to_cols: to_columns.clone(),
-                            guess: Some(note),
-                        });
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
