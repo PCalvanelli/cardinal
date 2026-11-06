@@ -12,7 +12,7 @@ use crate::operator::g008::Call;
 use crate::sites::{Site, aggregate_sites, bare_group};
 use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity};
-use cardinal_grain::{AnalyzedModel, RelationFacts, Unit, summed_col};
+use cardinal_grain::{AnalyzedModel, RelationFacts, Unit, aggregate, summed_col};
 use cardinal_sql::SourceText;
 
 pub struct MixedUnits;
@@ -39,7 +39,7 @@ fn check(
     site: &Site<'_>,
 ) -> Option<Diagnostic> {
     let name = site.name.to_ascii_lowercase();
-    if !matches!(name.as_str(), "sum" | "avg" | "mean" | "min" | "max") || site.args.len() != 1 {
+    if !aggregate(&name).is_some_and(|a| a.keeps_unit) || site.args.len() != 1 {
         return None;
     }
     let input: &RelationFacts = model.facts(site.input)?;

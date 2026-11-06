@@ -1,6 +1,7 @@
 //! Grain inference: facts computed bottom-up over a model's logical plan, one rule per
 //! plan node, on the plan exactly as SqlToRel produced it.
 
+use crate::aggregates::{aggregate, is_distinct_count};
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
 use crate::expr::{col_index, expr_cols, summed_col, unalias};
 use crate::facts::{
@@ -159,41 +160,6 @@ pub(crate) enum Out {
     Lit { non_null: bool },
     Expr { cols: ColSet, non_null: bool },
     Opaque { non_null: bool },
-}
-
-/// Aggregates that count distinct values: summing their results across groups can count
-/// a value once per group.
-pub const DISTINCT_COUNTS: &[&str] = &["approx_distinct", "approx_count_distinct", "hll"];
-
-pub fn is_distinct_count(name: &str, distinct: bool) -> bool {
-    let n = name.to_ascii_lowercase();
-    (n == "count" && distinct) || DISTINCT_COUNTS.contains(&n.as_str())
-}
-
-/// Aggregates whose result counts or adds up rows: dividing two of these makes a ratio.
-/// min, max and the like pick one value, so `sum(a) / max(rate)` is a conversion.
-fn is_counting(name: &str) -> bool {
-    matches!(
-        name,
-        "sum" | "count" | "avg" | "mean" | "approx_distinct" | "approx_count_distinct" | "hll"
-    )
-}
-
-/// Aggregates whose result can't be added up across groups.
-fn computed_kind(name: &str) -> Option<Computed> {
-    match name {
-        "avg" | "mean" => Some(Computed::Average),
-        "median"
-        | "approx_median"
-        | "percentile_cont"
-        | "percentile_disc"
-        | "approx_percentile_cont"
-        | "approx_percentile_cont_with_weight"
-        | "quantile"
-        | "quantile_cont"
-        | "quantile_disc" => Some(Computed::Percentile),
-        _ => None,
-    }
 }
 
 /// A division whose numerator and denominator both read aggregated columns:
@@ -1209,13 +1175,13 @@ impl Analyzer<'_> {
             return;
         };
         let name = u.name().to_ascii_lowercase();
-        if is_counting(&name) {
+        if aggregate(&name).is_some_and(|a| a.counting) {
             f.aggregated.insert(out);
         }
         let span = self.call_span(&name, wf.params.args.iter());
         let frame = &wf.params.window_frame;
         let whole = frame.start_bound.is_unbounded() && frame.end_bound.is_unbounded();
-        let (kind, what, over) = if let Some(what) = computed_kind(&name) {
+        let (kind, what, over) = if let Some(what) = aggregate(&name).and_then(|a| a.computed) {
             (
                 MeasureKind::NonAdditive {
                     agree_on: ColSet::new(),
@@ -1223,7 +1189,7 @@ impl Analyzer<'_> {
                 what,
                 vec![],
             )
-        } else if matches!(name.as_str(), "sum" | "count")
+        } else if aggregate(&name).is_some_and(|a| a.totals)
             && !wf.params.order_by.is_empty()
             && !whole
         {
@@ -1307,10 +1273,10 @@ impl Analyzer<'_> {
             };
             let out = g + j;
             let name = af.func.name().to_ascii_lowercase();
-            if is_counting(&name) {
+            if aggregate(&name).is_some_and(|a| a.counting) {
                 f.aggregated.insert(out);
             }
-            if let Some(what) = computed_kind(&name) {
+            if let Some(what) = aggregate(&name).and_then(|a| a.computed) {
                 let order = af.params.order_by.iter().map(|o| &o.expr);
                 let span = self.call_span(&name, af.params.args.iter().chain(order));
                 f.measures.push(Measure {
@@ -1326,9 +1292,7 @@ impl Analyzer<'_> {
                     }),
                 });
             }
-            if !matches!(name.as_str(), "sum" | "avg" | "mean" | "min" | "max")
-                || af.params.args.len() != 1
-            {
+            if !aggregate(&name).is_some_and(|a| a.keeps_unit) || af.params.args.len() != 1 {
                 continue;
             }
             let Some(c) = summed_col(&af.params.args[0], schema) else {

@@ -8,7 +8,7 @@
 use crate::sites::{Site, aggregate_sites};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity, normalize_text};
-use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts, col_index, exprs_cols};
+use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts, aggregate, col_index, exprs_cols};
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_expr::{Expr, LogicalPlan};
 use cardinal_sql::provider::{FunctionOrigin, Functions};
@@ -26,36 +26,15 @@ pub enum AggClass {
     Unknown,
 }
 
-const NON_IDEMPOTENT: &[&str] = &[
-    "sum",
-    "avg",
-    "mean",
-    "count",
-    "var",
-    "var_samp",
-    "var_pop",
-    "variance",
-    "variance_samp",
-    "variance_pop",
-    "stddev",
-    "stddev_samp",
-    "stddev_pop",
-    "string_agg",
-    "array_agg",
-    "listagg",
-];
-const IDEMPOTENT: &[&str] = &["min", "max", "any_value", "bool_and", "bool_or"];
-
 pub fn classify(name: &str, distinct: bool, functions: &Functions) -> AggClass {
     let n = name.to_ascii_lowercase();
     if distinct && n == "count" {
         return AggClass::Idempotent;
     }
-    if IDEMPOTENT.contains(&n.as_str()) {
-        return AggClass::Idempotent;
-    }
-    if NON_IDEMPOTENT.contains(&n.as_str()) {
-        return AggClass::NonIdempotent;
+    match aggregate(&n).and_then(|a| a.idempotent) {
+        Some(true) => return AggClass::Idempotent,
+        Some(false) => return AggClass::NonIdempotent,
+        None => {}
     }
     match functions.aggregate_stubs.get(&n) {
         Some((_, true)) => AggClass::Idempotent,

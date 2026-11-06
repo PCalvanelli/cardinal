@@ -23,7 +23,7 @@ use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};
 use cardinal_grain::{
     AnalyzedModel, Computed, DistinctSite, Measure, MeasureKind, MeasureSite, RelationFacts,
-    col_index, summed_col, unalias,
+    aggregate, col_index, summed_col, unalias,
 };
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_expr::Expr;
@@ -53,7 +53,7 @@ fn check(
     site: &Site<'_>,
 ) -> Option<Diagnostic> {
     let name = site.name.to_ascii_lowercase();
-    let avg = matches!(name.as_str(), "avg" | "mean");
+    let avg = aggregate(&name).is_some_and(|a| a.computed == Some(Computed::Average));
     if !(name == "sum" || avg) || site.distinct || site.args.len() != 1 {
         return None;
     }
