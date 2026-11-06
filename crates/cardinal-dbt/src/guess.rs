@@ -121,6 +121,186 @@ impl Hypothesis {
             Hypothesis::References { .. } => format!("{n} {rows} with no match"),
         }
     }
+
+    /// The claim alone, as `cardinal guess` lists it: "one row per customer_id".
+    pub fn claim(&self, display: &dyn Fn(&RelationId) -> String) -> String {
+        match self {
+            Hypothesis::Key { columns, .. } => format!("one row per {}", columns.join(", ")),
+            Hypothesis::References {
+                columns,
+                to,
+                to_columns,
+                ..
+            } => format!(
+                "every {} is in {}.{}",
+                columns.join(", "),
+                display(to),
+                to_columns.join(", ")
+            ),
+        }
+    }
+
+    /// The dbt test name for a guess: "cardinal_key_app_customers_customer_id_1a2b3c4d".
+    pub fn test_name(&self, display: &dyn Fn(&RelationId) -> String) -> String {
+        format!("{}_{}", readable_name(self, display), hypothesis_hash(self))
+    }
+}
+
+// The file `cardinal guess` writes for each guess: a dbt singular test that returns the
+// rows refuting it, with the hypothesis in `config.meta.cardinal.guess` for
+// `Hypothesis::from_meta` to read back.
+
+/// First line of every file `cardinal guess` writes; marks it as safe to rewrite.
+pub const MARKER: &str = "-- Cardinal's guess:";
+
+/// A guess `cardinal guess` writes as a dbt test.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Guess {
+    pub hypothesis: Hypothesis,
+    /// Why Cardinal guesses it, in plain words.
+    pub why: Vec<String>,
+    /// What it would let Cardinal check, in plain words.
+    pub unlocks: String,
+    /// The dbt test name, which is also the file name.
+    pub test_name: String,
+}
+
+impl Guess {
+    /// The singular test for a guess: a header in plain words, the hypothesis in
+    /// `config.meta.cardinal.guess`, and SQL that returns the rows that refute it.
+    /// `relation_sql` renders a relation as the test reads it (`{{ source(...) }}`).
+    pub fn test_sql(
+        &self,
+        display: &dyn Fn(&RelationId) -> String,
+        relation_sql: &dyn Fn(&RelationId) -> String,
+    ) -> String {
+        let h = &self.hypothesis;
+        let mut out = format!("{MARKER} {}.\n", h.describe(&display));
+        for w in &self.why {
+            out.push_str(&format!("-- Why: {w}.\n"));
+        }
+        out.push_str(&format!("-- If it holds, it {}.\n", self.unlocks));
+        let meta = serde_json::to_string(h).unwrap_or_default();
+        match h {
+            Hypothesis::Key { relation, columns } => {
+                out.push_str(&format!(
+                    "-- This test returns every row whose {} is null or repeated.\n",
+                    tuple(columns)
+                ));
+                out.push_str(TRAILER);
+                out.push_str(&config_line(&meta));
+                let cols = columns.join(", ");
+                let nulls = columns
+                    .iter()
+                    .map(|c| format!("{c} is null"))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                out.push_str(&format!(
+                    "\nselect *\nfrom (\n    select\n        {cols},\n        count(*) over (partition by {cols}) as cardinal_rows\n    from {}\n) rows_by_key\nwhere {nulls} or cardinal_rows > 1\n",
+                    relation_sql(relation)
+                ));
+            }
+            Hypothesis::References {
+                relation,
+                columns,
+                to,
+                to_columns,
+            } => {
+                out.push_str(&format!(
+                    "-- This test returns every row whose {} is not null and has no match in {}.\n",
+                    tuple(columns),
+                    display(to)
+                ));
+                out.push_str(TRAILER);
+                out.push_str(&config_line(&meta));
+                let on = columns
+                    .iter()
+                    .zip(to_columns)
+                    .map(|(c, p)| format!("child.{c} = parent.{p}"))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                let not_null = columns
+                    .iter()
+                    .map(|c| format!("child.{c} is not null"))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                out.push_str(&format!(
+                    "\nselect {}\nfrom {} child\nleft join {} parent\n    on {on}\nwhere {not_null}\n    and parent.{} is null\n",
+                    columns
+                        .iter()
+                        .map(|c| format!("child.{c}"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    relation_sql(relation),
+                    relation_sql(to),
+                    to_columns[0]
+                ));
+            }
+        }
+        out
+    }
+}
+
+const TRAILER: &str = "-- Written by `cardinal guess`. Cardinal uses the guess only after dbt passes this test,\n-- and stops guessing it if dbt fails it. Keep the file so dbt checks the guess on every run.\n";
+
+fn config_line(meta_json: &str) -> String {
+    format!("{{{{ config(tags=['cardinal'], meta={{'cardinal': {{'guess': {meta_json}}}}}) }}}}\n")
+}
+
+fn sanitize(s: &str) -> String {
+    let mut out: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// A short, stable hash of the whole hypothesis (relation ids, columns, and target), so
+/// hypotheses whose sanitized names collide still get distinct test names.
+fn hypothesis_hash(h: &Hypothesis) -> String {
+    let id = match h {
+        Hypothesis::Key { relation, columns } => {
+            format!("key\0{}\0{}", relation.0, columns.join("\0"))
+        }
+        Hypothesis::References {
+            relation,
+            columns,
+            to,
+            to_columns,
+        } => format!(
+            "references\0{}\0{}\0{}\0{}",
+            relation.0,
+            columns.join("\0"),
+            to.0,
+            to_columns.join("\0")
+        ),
+    };
+    blake3::hash(id.as_bytes()).to_hex()[..8].to_string()
+}
+
+fn readable_name(h: &Hypothesis, display: &dyn Fn(&RelationId) -> String) -> String {
+    match h {
+        Hypothesis::Key { relation, columns } => format!(
+            "cardinal_key_{}_{}",
+            sanitize(&display(relation)),
+            sanitize(&columns.join("_"))
+        ),
+        Hypothesis::References {
+            relation,
+            columns,
+            to,
+            ..
+        } => format!(
+            "cardinal_ref_{}_{}_to_{}",
+            sanitize(&display(relation)),
+            sanitize(&columns.join("_")),
+            sanitize(&display(to))
+        ),
+    }
 }
 
 /// A Cardinal guess test found in the manifest.
@@ -617,5 +797,116 @@ mod tests {
         let s = rfc3339(t).unwrap();
         assert_eq!(parse_rfc3339(&s), Some((1_793_786_400, 123_456_000)));
         assert_eq!(s.get(..10), Some("2026-11-04"));
+    }
+
+    #[test]
+    fn key_test_returns_null_and_repeated_rows() {
+        let h = Hypothesis::Key {
+            relation: RelationId("source.p.app.events".into()),
+            columns: vec!["event_id".into()],
+        };
+        let g = Guess {
+            test_name: "cardinal_key_app_events_event_id".into(),
+            hypothesis: h,
+            why: vec!["event_id is named like the table's id".into()],
+            unlocks: "lets Cardinal check 2 models that depend on it".into(),
+        };
+        let sql = g.test_sql(&|_| "app.events".into(), &|_| {
+            "{{ source('app', 'events') }}".into()
+        });
+        insta::assert_snapshot!(sql, @r#"
+        -- Cardinal's guess: app.events has one row per event_id.
+        -- Why: event_id is named like the table's id.
+        -- If it holds, it lets Cardinal check 2 models that depend on it.
+        -- This test returns every row whose event_id is null or repeated.
+        -- Written by `cardinal guess`. Cardinal uses the guess only after dbt passes this test,
+        -- and stops guessing it if dbt fails it. Keep the file so dbt checks the guess on every run.
+        {{ config(tags=['cardinal'], meta={'cardinal': {'guess': {"kind":"key","relation":"source.p.app.events","columns":["event_id"]}}}) }}
+
+        select *
+        from (
+            select
+                event_id,
+                count(*) over (partition by event_id) as cardinal_rows
+            from {{ source('app', 'events') }}
+        ) rows_by_key
+        where event_id is null or cardinal_rows > 1
+        "#);
+        let meta: serde_json::Value = serde_json::json!({"cardinal": {"guess": serde_json::from_str::<serde_json::Value>(
+            &serde_json::to_string(&g.hypothesis).unwrap()).unwrap()}});
+        assert_eq!(
+            Hypothesis::from_meta(Some(&meta)),
+            Some(g.hypothesis.clone())
+        );
+    }
+
+    #[test]
+    fn reference_test_returns_unmatched_rows() {
+        let h = Hypothesis::References {
+            relation: RelationId("o".into()),
+            columns: vec!["customer_id".into()],
+            to: RelationId("c".into()),
+            to_columns: vec!["id".into()],
+        };
+        let g = Guess {
+            test_name: "t".into(),
+            hypothesis: h,
+            why: vec![],
+            unlocks: "helps".into(),
+        };
+        let sql = g.test_sql(&|id| id.0.clone(), &|id| {
+            format!("{{{{ ref('{}') }}}}", id.0)
+        });
+        let body = sql.split_once("}}\n").map(|x| x.1).unwrap_or(&sql);
+        assert!(sql.contains(
+            "-- This test returns every row whose customer_id is not null and has no match in c."
+        ));
+        assert!(body.contains("from {{ ref('o') }} child\nleft join {{ ref('c') }} parent\n    on child.customer_id = parent.id\nwhere child.customer_id is not null\n    and parent.id is null\n"), "{sql}");
+    }
+
+    #[test]
+    fn test_names_are_identifiers() {
+        let d = |id: &RelationId| id.0.trim_start_matches("source.p.").to_string();
+        let h = Hypothesis::Key {
+            relation: RelationId("source.p.app.order-lines".into()),
+            columns: vec!["order_id".into(), "line".into()],
+        };
+        let name = h.test_name(&d);
+        assert!(
+            name.starts_with("cardinal_key_app_order_lines_order_id_line_"),
+            "{name}"
+        );
+        assert_eq!(name, h.test_name(&d), "stable");
+        // Hypotheses whose readable names collide still get different names.
+        let h2 = Hypothesis::Key {
+            relation: RelationId("source.p.app.order_lines".into()),
+            columns: vec!["order_id".into(), "line".into()],
+        };
+        let h3 = Hypothesis::Key {
+            relation: RelationId("source.p.app.order-lines".into()),
+            columns: vec!["order_id_line".into()],
+        };
+        assert_eq!(readable_name(&h2, &d), readable_name(&h, &d));
+        assert_eq!(readable_name(&h3, &d), readable_name(&h, &d));
+        assert_ne!(h2.test_name(&d), name);
+        assert_ne!(h3.test_name(&d), name);
+        let h = Hypothesis::References {
+            relation: RelationId("source.p.app.orders".into()),
+            columns: vec!["customer_id".into()],
+            to: RelationId("source.p.app.customers".into()),
+            to_columns: vec!["id".into()],
+        };
+        let name = h.test_name(&d);
+        assert!(
+            name.starts_with("cardinal_ref_app_orders_customer_id_to_app_customers_"),
+            "{name}"
+        );
+        let other_target = Hypothesis::References {
+            relation: RelationId("source.p.app.orders".into()),
+            columns: vec!["customer_id".into()],
+            to: RelationId("source.p.app.customers".into()),
+            to_columns: vec!["customer_id".into()],
+        };
+        assert_ne!(other_target.test_name(&d), name);
     }
 }

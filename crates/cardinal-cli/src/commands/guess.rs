@@ -3,8 +3,9 @@
 
 use super::report::coverage;
 use super::{EXIT_TOOL, eprint_error, load, plural};
-use crate::guess::{self, Guess, Keyless, MARKER};
-use cardinal_dbt::{Hypothesis, Kind, Project, RelationId};
+use crate::guess::{self, Keyless};
+use cardinal_dbt::guess::MARKER;
+use cardinal_dbt::{Guess, Hypothesis, Kind, Project, RelationId};
 use cardinal_engine::{Analysis, Config, Options};
 use cardinal_grain::UnknownReason;
 use std::collections::BTreeSet;
@@ -78,7 +79,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
     let mut written = 0;
     for g in &guesses {
         let path = abs.join(format!("{}.sql", g.test_name));
-        if write_if_changed(&path, &guess::test_file(project, g))
+        if write_if_changed(&path, &project.guess_test_file(g))
             .map_err(|e| format!("could not write {}: {e}", path.display()))?
         {
             written += 1;
@@ -130,20 +131,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
             + 2;
         for g in &guesses {
             let name = display(g.hypothesis.relation());
-            let claim = match &g.hypothesis {
-                Hypothesis::Key { columns, .. } => format!("one row per {}", columns.join(", ")),
-                Hypothesis::References {
-                    columns,
-                    to,
-                    to_columns,
-                    ..
-                } => format!(
-                    "every {} is in {}.{}",
-                    columns.join(", "),
-                    display(to),
-                    to_columns.join(", ")
-                ),
-            };
+            let claim = g.hypothesis.claim(&display);
             out.push_str(&format!("\n  {name:<w$}{claim}\n"));
             if !g.why.is_empty() {
                 out.push_str(&format!("  {:<w$}why: {}\n", "", g.why.join(", and ")));

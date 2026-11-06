@@ -528,6 +528,8 @@ dependencies = [
 name = "cardinal-dbt"
 version = "0.1.0-beta.6"
 dependencies = [
+ "blake3",
+ "insta",
  "petgraph",
  "serde",
  "serde_json",

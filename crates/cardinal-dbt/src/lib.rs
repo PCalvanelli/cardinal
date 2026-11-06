@@ -10,7 +10,7 @@ pub mod project;
 pub mod select;
 
 pub use assumption::{Assumption, CheckedBy, Status, weak_check};
-pub use guess::{GuessLog, GuessNote, GuessResult, GuessTest, Hypothesis};
+pub use guess::{Guess, GuessLog, GuessNote, GuessResult, GuessTest, Hypothesis};
 pub use project::{
     Column, DataTest, DeclOrigin, DeclProblem, DeclProblemKind, DeclaredKey, DeclaredMeasure,
     DeclaredReference, DeclaredUnit, ExactlyOnce, Incremental, Kind, LoadError, LoadWarning,

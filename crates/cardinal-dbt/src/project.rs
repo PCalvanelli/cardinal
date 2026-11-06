@@ -2,7 +2,7 @@ use crate::artifacts::{
     Catalog, ColumnInfo, KNOWN_MANIFEST_VERSIONS, Manifest, ManifestNode, NodeConfig,
 };
 use crate::guess::{
-    GuessLog, GuessNote, GuessResult, GuessTest, Hypothesis, results_from_run, rfc3339,
+    Guess, GuessLog, GuessNote, GuessResult, GuessTest, Hypothesis, results_from_run, rfc3339,
 };
 pub use crate::names::RelationId;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -1762,6 +1762,34 @@ impl Project {
                 }
             }
         }
+    }
+}
+
+impl Relation {
+    /// How a dbt test reads this relation: `ref('orders')` or `source('app', 'events')`.
+    pub fn ref_call(&self) -> String {
+        match (&self.kind, self.display.split_once('.')) {
+            (Kind::Source, Some((src, table))) => format!("source('{src}', '{table}')"),
+            _ => format!("ref('{}')", self.display),
+        }
+    }
+}
+
+impl Project {
+    /// The name people know a relation by, or its id when the project doesn't have it.
+    pub fn display(&self, id: &RelationId) -> String {
+        self.get(id)
+            .map(|r| r.display.clone())
+            .unwrap_or_else(|| id.0.clone())
+    }
+
+    /// The dbt singular test that checks `g` in this project.
+    pub fn guess_test_file(&self, g: &Guess) -> String {
+        let relation_sql = |id: &RelationId| match self.get(id) {
+            Some(r) => format!("{{{{ {} }}}}", r.ref_call()),
+            None => id.0.clone(),
+        };
+        g.test_sql(&|id| self.display(id), &relation_sql)
     }
 }
 
