@@ -2,6 +2,7 @@
 //! plan node, on the plan exactly as SqlToRel produced it.
 
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
+use crate::expr::{col_index, expr_cols, summed_col, unalias};
 use crate::facts::{
     Cardinality, ColSet, Computed, Deleted, DistinctSite, Fd, FlagDrop, GrainStatus, Ind, JoinSite,
     Key, LossSite, MAX_KEYS, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, Unit,
@@ -11,7 +12,7 @@ use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use cardinal_sql::datafusion_common::{Column, DFSchema, NullEquality, ScalarValue};
-use cardinal_sql::datafusion_expr::expr::{Alias, WindowFunction};
+use cardinal_sql::datafusion_expr::expr::WindowFunction;
 use cardinal_sql::datafusion_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, JoinType, Projection, TableScan, Union, Window,
 };
@@ -160,38 +161,6 @@ pub(crate) enum Out {
     Opaque { non_null: bool },
 }
 
-pub(crate) fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(Alias { expr, .. }) => unalias(expr),
-        other => other,
-    }
-}
-
-pub(crate) fn col_index(schema: &DFSchema, c: &Column) -> Option<usize> {
-    schema.maybe_index_of_column(c).or_else(|| {
-        if c.relation.is_some() {
-            return None;
-        }
-        // Unqualified reference that is unique by name.
-        let hits: Vec<usize> = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.name() == &c.name)
-            .map(|(i, _)| i)
-            .collect();
-        (hits.len() == 1).then(|| hits[0])
-    })
-}
-
-/// Input positions of every column an expression reads; None if one cannot be resolved.
-pub(crate) fn expr_cols(e: &Expr, schema: &DFSchema) -> Option<ColSet> {
-    e.column_refs()
-        .into_iter()
-        .map(|c| col_index(schema, c))
-        .collect()
-}
-
 /// Aggregates that count distinct values: summing their results across groups can count
 /// a value once per group.
 pub const DISTINCT_COUNTS: &[&str] = &["approx_distinct", "approx_count_distinct", "hll"];
@@ -223,27 +192,6 @@ fn computed_kind(name: &str) -> Option<Computed> {
         | "quantile"
         | "quantile_cont"
         | "quantile_disc" => Some(Computed::Percentile),
-        _ => None,
-    }
-}
-
-/// The column an aggregate argument adds up: `v`, `cast(v as …)` or
-/// `coalesce(v, <literal>)`. Anything else (`v * rate`, `case when v > 100 then 1 end`)
-/// is a different value.
-pub fn summed_col(e: &Expr, schema: &DFSchema) -> Option<usize> {
-    match unalias(e) {
-        Expr::Column(c) => col_index(schema, c),
-        Expr::Cast(c) => summed_col(&c.expr, schema),
-        Expr::TryCast(c) => summed_col(&c.expr, schema),
-        Expr::ScalarFunction(f)
-            if matches!(
-                f.func.name().to_ascii_lowercase().as_str(),
-                "coalesce" | "ifnull" | "nvl"
-            ) && f.args.len() == 2
-                && matches!(unalias(&f.args[1]), Expr::Literal(..)) =>
-        {
-            summed_col(&f.args[0], schema)
-        }
         _ => None,
     }
 }

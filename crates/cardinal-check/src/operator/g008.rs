@@ -18,12 +18,12 @@
 //! days in one group, so it must not count as `group by day`.
 
 use crate::operator::g001::check_site;
-use crate::sites::{Site, aggregate_sites, bare_group, unalias};
+use crate::sites::{Site, aggregate_sites, bare_group};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};
 use cardinal_grain::{
     AnalyzedModel, Computed, DistinctSite, Measure, MeasureKind, MeasureSite, RelationFacts,
-    summed_col,
+    col_index, summed_col, unalias,
 };
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_expr::Expr;
@@ -112,7 +112,7 @@ impl Call {
         let col_span: Option<SqlSpan> = site.args[0]
             .column_refs()
             .into_iter()
-            .filter(|r| schema.maybe_index_of_column(r) == Some(c))
+            .filter(|r| col_index(schema, r) == Some(c))
             .find_map(|r| r.spans().first())
             .and_then(|s| SqlSpan::from_df(&s));
         let span = col_span
@@ -146,7 +146,7 @@ fn group_text(text: &SourceText<'_>, schema: &DFSchema, exprs: &[Expr]) -> Optio
             Expr::ScalarFunction(f) => e
                 .column_refs()
                 .into_iter()
-                .filter(|r| schema.maybe_index_of_column(r).is_some())
+                .filter(|r| col_index(schema, r).is_some())
                 .find_map(|r| r.spans().first())
                 .and_then(|s| SqlSpan::from_df(&s))
                 .and_then(|s| text.enclosing_call(s, f.func.name()))

@@ -5,10 +5,10 @@
 //! D ∪ G not a superkey of I. Rows sharing D then repeat c within a group, and the
 //! aggregate overcounts.
 
-use crate::sites::{Site, aggregate_sites, col_positions};
+use crate::sites::{Site, aggregate_sites};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity, normalize_text};
-use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts};
+use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts, col_index, exprs_cols};
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_expr::{Expr, LogicalPlan};
 use cardinal_sql::provider::{FunctionOrigin, Functions};
@@ -111,7 +111,7 @@ pub(crate) fn check_site(
         return None;
     }
     let schema = site.input.schema();
-    let args = col_positions(schema, site.args)?;
+    let args = exprs_cols(site.args, schema)?;
     if args.is_empty() {
         return None;
     }
@@ -159,7 +159,7 @@ fn build(
         .args
         .iter()
         .flat_map(|a| a.column_refs())
-        .filter(|r| schema.maybe_index_of_column(r) == Some(c))
+        .filter(|r| col_index(schema, r) == Some(c))
         .find_map(|r| r.spans().first())
         .and_then(|s| SqlSpan::from_df(&s));
     let call = col_span

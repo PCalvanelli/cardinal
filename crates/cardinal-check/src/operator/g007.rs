@@ -9,7 +9,7 @@
 
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, normalize_text};
-use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts};
+use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts, col_index, unalias};
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use cardinal_sql::datafusion_expr::expr::WindowFunction;
@@ -50,16 +50,9 @@ impl Check for WindowOrderTies {
     }
 }
 
-fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(a) => unalias(&a.expr),
-        o => o,
-    }
-}
-
 fn plain_col(schema: &DFSchema, e: &Expr) -> Option<usize> {
     match unalias(e) {
-        Expr::Column(c) => schema.maybe_index_of_column(c),
+        Expr::Column(c) => col_index(schema, c),
         _ => None,
     }
 }
@@ -105,7 +98,7 @@ fn check(
         let mut args = ColSet::new();
         for a in wf.params.args.iter().take(1) {
             for c in a.column_refs() {
-                args.insert(schema.maybe_index_of_column(c)?);
+                args.insert(col_index(schema, c)?);
             }
         }
         if args.is_subset(&input.closure(&x)) {

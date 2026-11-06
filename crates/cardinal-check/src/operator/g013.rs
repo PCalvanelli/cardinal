@@ -10,7 +10,7 @@
 
 use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
-use cardinal_grain::AnalyzedModel;
+use cardinal_grain::{AnalyzedModel, col_index, unalias};
 use cardinal_sql::datafusion_common::tree_node::TreeNodeRecursion;
 use cardinal_sql::datafusion_expr::expr::AggregateFunction;
 use cardinal_sql::datafusion_expr::logical_plan::{Aggregate, Filter, Join, JoinType};
@@ -37,13 +37,6 @@ impl Check for CountOuterJoin {
     }
 }
 
-fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(a) => unalias(&a.expr),
-        o => o,
-    }
-}
-
 /// The join below `plan` through projections, aliases, sorts and filters, with the
 /// filters passed on the way.
 fn join_below<'a>(plan: &'a LogicalPlan, filters: &mut Vec<&'a Filter>) -> Option<&'a Join> {
@@ -66,7 +59,7 @@ fn trace(plan: &LogicalPlan, idx: usize, join: &Join) -> Option<usize> {
     match plan {
         LogicalPlan::Join(j) if std::ptr::eq(j, join) => Some(idx),
         LogicalPlan::Projection(p) => match unalias(p.expr.get(idx)?) {
-            Expr::Column(c) => trace(&p.input, p.input.schema().maybe_index_of_column(c)?, join),
+            Expr::Column(c) => trace(&p.input, col_index(p.input.schema(), c)?, join),
             _ => None,
         },
         LogicalPlan::SubqueryAlias(s) => trace(&s.input, idx, join),
@@ -82,7 +75,7 @@ fn side_of(plan: &LogicalPlan, e: &Expr, join: &Join) -> Option<Option<bool>> {
     let lw = join.left.schema().fields().len();
     let mut side = None;
     for c in e.column_refs() {
-        let i = plan.schema().maybe_index_of_column(c)?;
+        let i = col_index(plan.schema(), c)?;
         let right = trace(plan, i, join)? >= lw;
         if side.is_some_and(|s| s != right) {
             return None;
@@ -123,7 +116,7 @@ fn check_aggregate(
     // A WHERE on the filled side drops the unmatched rows already (G011's to report).
     for f in &filters {
         for c in f.predicate.column_refs() {
-            let Some(i) = f.input.schema().maybe_index_of_column(c) else {
+            let Some(i) = col_index(f.input.schema(), c) else {
                 return;
             };
             match trace(&f.input, i, j) {
@@ -217,9 +210,7 @@ fn check_aggregate(
 fn filled_column(j: &Join, filled_right: bool) -> Option<String> {
     let filled = if filled_right { &j.right } else { &j.left };
     let on_filled = |e: &Expr| match unalias(e) {
-        Expr::Column(c) if filled.schema().maybe_index_of_column(c).is_some() => {
-            Some(c.flat_name())
-        }
+        Expr::Column(c) if col_index(filled.schema(), c).is_some() => Some(c.flat_name()),
         _ => None,
     };
     let pairs = j.on.iter().map(|(l, r)| (l, r));

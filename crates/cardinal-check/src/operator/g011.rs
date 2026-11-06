@@ -13,7 +13,7 @@
 
 use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
-use cardinal_grain::AnalyzedModel;
+use cardinal_grain::{AnalyzedModel, col_index};
 use cardinal_sql::SqlSpan;
 use cardinal_sql::datafusion_common::Column;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -40,11 +40,12 @@ impl Check for FilterDropsNulls {
     }
 }
 
-fn unalias(e: &Expr) -> &Expr {
+/// The expression under any aliases and casts.
+fn uncast(e: &Expr) -> &Expr {
     match e {
-        Expr::Alias(Alias { expr, .. }) => unalias(expr),
-        Expr::Cast(c) => unalias(&c.expr),
-        Expr::TryCast(c) => unalias(&c.expr),
+        Expr::Alias(Alias { expr, .. }) => uncast(expr),
+        Expr::Cast(c) => uncast(&c.expr),
+        Expr::TryCast(c) => uncast(&c.expr),
         other => other,
     }
 }
@@ -93,7 +94,7 @@ fn not_in(cx: &CheckContext<'_>, model: &AnalyzedModel, f: &Filter, out: &mut Ve
                 if l.negated
                     && l.list
                         .iter()
-                        .any(|x| matches!(unalias(x), Expr::Literal(v, _) if v.is_null())) =>
+                        .any(|x| matches!(uncast(x), Expr::Literal(v, _) if v.is_null())) =>
             {
                 push_not_in(cx, model, &l.expr, "the list", out);
             }
@@ -140,12 +141,12 @@ fn push_not_in(
 /// dropped) when the column is null.
 fn null_rejected(e: &Expr) -> Vec<&Column> {
     fn col(x: &Expr) -> Option<&Column> {
-        match unalias(x) {
+        match uncast(x) {
             Expr::Column(c) => Some(c),
             _ => None,
         }
     }
-    match unalias(e) {
+    match uncast(e) {
         Expr::BinaryExpr(BinaryExpr {
             left,
             op:
@@ -177,9 +178,9 @@ fn null_filling_join(plan: &LogicalPlan, idx: usize) -> Option<&Join> {
         LogicalPlan::SubqueryAlias(s) => null_filling_join(&s.input, idx),
         LogicalPlan::Sort(s) => null_filling_join(&s.input, idx),
         LogicalPlan::Limit(l) => null_filling_join(&l.input, idx),
-        LogicalPlan::Projection(p) => match unalias(p.expr.get(idx)?) {
+        LogicalPlan::Projection(p) => match uncast(p.expr.get(idx)?) {
             Expr::Column(c) => {
-                let i = p.input.schema().maybe_index_of_column(c)?;
+                let i = col_index(p.input.schema(), c)?;
                 null_filling_join(&p.input, i)
             }
             _ => None,
@@ -223,7 +224,7 @@ fn outer_join_turned_inner(
     let mut reported: Vec<usize> = Vec::new();
     for conjunct in split_conjunction(&f.predicate) {
         for c in null_rejected(conjunct) {
-            let Some(i) = schema.maybe_index_of_column(c) else {
+            let Some(i) = col_index(schema, c) else {
                 continue;
             };
             let Some(j) = null_filling_join(&f.input, i) else {

@@ -1,7 +1,7 @@
 //! Aggregate sites shared by G001, G008 and G009: every aggregate call in a plan, with its
 //! GROUP BY (or window PARTITION BY) and the plan node it reads.
 
-use cardinal_grain::ColSet;
+use cardinal_grain::{ColSet, col_index, exprs_cols, unalias};
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use cardinal_sql::datafusion_expr::expr::AggregateFunction;
@@ -20,32 +20,15 @@ pub(crate) struct Site<'a> {
     pub window: bool,
 }
 
-pub(crate) fn col_positions(schema: &DFSchema, exprs: &[Expr]) -> Option<ColSet> {
-    let mut out = ColSet::new();
-    for e in exprs {
-        for c in e.column_refs() {
-            out.insert(schema.maybe_index_of_column(c)?);
-        }
-    }
-    Some(out)
-}
-
 /// Input positions of the GROUP BY / PARTITION BY expressions that are plain columns.
 pub(crate) fn bare_group(schema: &DFSchema, exprs: &[Expr]) -> ColSet {
     exprs
         .iter()
         .filter_map(|e| match unalias(e) {
-            Expr::Column(c) => schema.maybe_index_of_column(c),
+            Expr::Column(c) => col_index(schema, c),
             _ => None,
         })
         .collect()
-}
-
-pub(crate) fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(a) => unalias(&a.expr),
-        o => o,
-    }
 }
 
 pub(crate) fn aggregate_sites(plan: &LogicalPlan) -> Vec<Site<'_>> {
@@ -54,7 +37,7 @@ pub(crate) fn aggregate_sites(plan: &LogicalPlan) -> Vec<Site<'_>> {
         match node {
             LogicalPlan::Aggregate(a) => {
                 let schema = a.input.schema();
-                let Some(group) = col_positions(schema, &a.group_expr) else {
+                let Some(group) = exprs_cols(&a.group_expr, schema) else {
                     return Ok(TreeNodeRecursion::Continue);
                 };
                 for e in &a.aggr_expr {
@@ -77,7 +60,7 @@ pub(crate) fn aggregate_sites(plan: &LogicalPlan) -> Vec<Site<'_>> {
                 for e in &w.window_expr {
                     if let Expr::WindowFunction(wf) = unalias(e)
                         && let WindowFunctionDefinition::AggregateUDF(u) = &wf.fun
-                        && let Some(group) = col_positions(schema, &wf.params.partition_by)
+                        && let Some(group) = exprs_cols(&wf.params.partition_by, schema)
                     {
                         sites.push(Site {
                             name: u.name().to_string(),
