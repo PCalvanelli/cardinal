@@ -1,4 +1,4 @@
-//! The analysis pipeline: one DAG level at a time, models in a level in parallel.
+//! The analysis: one DAG level at a time, models in a level in parallel.
 //! A model's finished facts become the schema and facts its dependents' scans read.
 
 use crate::config::Config;
@@ -43,10 +43,10 @@ pub struct ModelResult {
     /// True when the SQL parsed and planned.
     pub planned: bool,
     #[serde(skip)]
-    pub from_cache: bool,
+    pub(crate) from_cache: bool,
     /// The cache key it was computed under; empty when nothing was planned.
     #[serde(skip)]
-    pub cache_key: String,
+    pub(crate) cache_key: String,
 }
 
 pub struct RunResult {
@@ -56,10 +56,10 @@ pub struct RunResult {
 }
 
 pub struct Engine<'a> {
-    pub project: &'a Project,
-    pub functions: Functions,
-    pub dialect: Box<dyn Dialect + Send + Sync>,
-    pub cache: Cache,
+    project: &'a Project,
+    functions: Functions,
+    dialect: Box<dyn Dialect + Send + Sync>,
+    cache: Cache,
     config_fingerprint: String,
     /// Prefix for cache entries, so a second build of the project keeps its own.
     cache_prefix: &'static str,
@@ -91,8 +91,8 @@ impl UpstreamFacts for Lookup<'_> {
 }
 
 /// Maps compiled-SQL spans to the model's own source file.
-pub struct ProjectLocator<'a> {
-    pub project: &'a Project,
+pub(crate) struct ProjectLocator<'a> {
+    pub(crate) project: &'a Project,
 }
 
 impl Locator for ProjectLocator<'_> {
@@ -160,7 +160,7 @@ impl<'a> Engine<'a> {
     /// An engine for the base branch's artifacts (`--state`). It reuses the head's
     /// results for models whose SQL and inputs are unchanged, and caches the others
     /// apart from the head's, so neither evicts the other.
-    pub fn for_state(
+    pub(crate) fn for_state(
         project: &'a Project,
         config: &Config,
         use_cache: bool,
@@ -405,7 +405,7 @@ fn build_id() -> String {
 
 impl RunResult {
     /// No analysis: what graph and node checks read when no SQL is analyzed.
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         RunResult {
             results: BTreeMap::new(),
             elapsed: Duration::ZERO,
@@ -414,7 +414,7 @@ impl RunResult {
     }
 
     /// The shape of every analyzed relation, for project-wide checks and the shapes file.
-    pub fn shapes(&self, project: &Project) -> Shapes {
+    pub(crate) fn shapes(&self, project: &Project) -> Shapes {
         let mut shapes = Shapes::new(&project.adapter, project.invocation_id.clone());
         shapes.relations = self
             .results

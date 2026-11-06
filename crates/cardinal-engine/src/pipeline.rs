@@ -47,7 +47,25 @@ pub struct Options<'a> {
     pub no_sql: bool,
 }
 
-pub fn collect(
+/// No layers selected: every layer.
+static EVERY_LAYER: BTreeSet<Layer> = BTreeSet::new();
+
+impl<'a> Options<'a> {
+    /// Every finding in every layer, with no baseline or comparison: what `coverage`,
+    /// `guess` and the base branch's analysis read.
+    pub fn all_findings(severities: &'a Severities) -> Self {
+        Options {
+            severities,
+            baseline: None,
+            state: None,
+            min_severity: Severity::Info,
+            layers: &EVERY_LAYER,
+            no_sql: false,
+        }
+    }
+}
+
+pub(crate) fn collect(
     project: &Project,
     run: &RunResult,
     shapes: &Shapes,
@@ -244,7 +262,7 @@ pub fn collect(
 }
 
 /// Whether findings with `code` are reported when `layers` are selected (empty = all).
-pub fn layer_selected(code: Code, layers: &BTreeSet<Layer>) -> bool {
+fn layer_selected(code: Code, layers: &BTreeSet<Layer>) -> bool {
     layers.is_empty() || layers.contains(&code.layer())
 }
 

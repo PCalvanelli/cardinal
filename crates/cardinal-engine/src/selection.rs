@@ -37,7 +37,7 @@ pub fn selection(
 }
 
 /// The selected models plus everything upstream of them, which analysis needs.
-pub fn closure(project: &Project, selected: &BTreeSet<RelationId>) -> BTreeSet<RelationId> {
+pub(crate) fn closure(project: &Project, selected: &BTreeSet<RelationId>) -> BTreeSet<RelationId> {
     let mut needed = selected.clone();
     for id in selected {
         needed.extend(project.ancestors(id));

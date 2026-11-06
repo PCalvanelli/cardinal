@@ -3,6 +3,7 @@
 //! severities, the baseline and the comparison with the base branch (`--state`).
 //! The `cardinal` CLI is one frontend; benchmarks and tests drive the engine directly.
 
+mod analysis;
 mod comparison;
 mod config;
 mod engine;
@@ -10,9 +11,9 @@ mod pipeline;
 mod selection;
 mod state;
 
+pub use analysis::Analysis;
 pub use comparison::{BaseShapes, Comparison};
 pub use config::{BaselineConfig, Config, GuessConfig, Level, PathOverride, Severities};
 pub use engine::{Engine, JoinSummary, ModelResult, RunResult};
-pub use pipeline::{Findings, Options, RootCause, collect};
-pub use selection::{closure, selection};
-pub use state::compare;
+pub use pipeline::{Findings, Options, RootCause};
+pub use selection::selection;

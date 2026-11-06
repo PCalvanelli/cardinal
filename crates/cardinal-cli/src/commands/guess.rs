@@ -5,8 +5,7 @@ use super::report::coverage;
 use super::{EXIT_TOOL, eprint_error, load, plural};
 use crate::guess::{self, Guess, Keyless, MARKER};
 use cardinal_dbt::{Hypothesis, Kind, Project, RelationId};
-use cardinal_diag::Severity;
-use cardinal_engine::{Config, Engine, Options, closure, collect};
+use cardinal_engine::{Analysis, Config, Options};
 use cardinal_grain::UnknownReason;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -51,18 +50,10 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
             .unwrap_or(id.0.clone())
     };
     let selected: BTreeSet<RelationId> = project.models().map(|r| r.id.clone()).collect();
-    let engine = Engine::new(project, config, true);
-    let run = engine.run(&closure(project, &selected));
+    let a = Analysis::new(project, config, selected, true);
+    let (run, selected) = (&a.run, &a.selected);
     let severities = config.severities(&[], &[])?;
-    let opts = Options {
-        severities: &severities,
-        baseline: None,
-        state: None,
-        min_severity: Severity::Info,
-        layers: &BTreeSet::new(),
-        no_sql: false,
-    };
-    let findings = collect(project, &run, &run.shapes(project), &selected, &opts);
+    let findings = a.findings(&a.shapes(), &Options::all_findings(&severities));
     let keyless: Vec<Keyless<'_>> = findings
         .root_causes
         .iter()
@@ -75,7 +66,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
             })
         })
         .collect();
-    let (guesses, no_candidate) = guess::propose(project, &run, &keyless, &project.guesses);
+    let (guesses, no_candidate) = guess::propose(project, run, &keyless, &project.guesses);
 
     let mut out = String::new();
     out.push_str(&checked_report(project, &mut |path| {
@@ -200,7 +191,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
              labeled as a guess; each one dbt fails is dropped and never guessed again.\n",
         );
     } else if !guesses.is_empty() || !project.guesses.guesses.is_empty() {
-        let cov = coverage(project, &run, &selected);
+        let cov = coverage(project, run, selected);
         out.push_str(&format!(
             "Next: cardinal check ({} of {} have a known key now).\n",
             cov.known,

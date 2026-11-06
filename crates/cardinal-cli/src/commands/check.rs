@@ -7,9 +7,7 @@ use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::render::{self, Style};
 use cardinal_diag::{ALL_LAYERS, Code, Layer, Severity};
-use cardinal_engine::{
-    Comparison, Config, Engine, Findings, Options, RunResult, closure, collect, selection,
-};
+use cardinal_engine::{Analysis, Comparison, Config, Findings, Options, RunResult, selection};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -78,12 +76,13 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     // Graph and node checks read only the manifest and catalog: with neither code nor
     // operator selected, no SQL is analyzed, so this works on the output of dbt parse.
     let no_sql = !layers.is_empty() && layers.iter().all(|l| !l.needs_sql());
-    let run = if no_sql {
-        RunResult::empty()
+    let analysis = if no_sql {
+        Analysis::without_sql(project, selected)
     } else {
-        Engine::new(project, config, !args.no_cache).run(&closure(project, &selected))
+        Analysis::new(project, config, selected, !args.no_cache)
     };
-    let mut shapes = run.shapes(project);
+    let (run, selected) = (&analysis.run, &analysis.selected);
+    let mut shapes = analysis.shapes();
     // A baseline records this branch's own findings; a comparison with main would add
     // P003 findings to it and hide findings main has, so --update-baseline skips it.
     // P003 is an operator-layer check, so it also needs that layer.
@@ -104,15 +103,7 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     let comparison = match state_dir {
         None => None,
         Some(dir) => {
-            let c = state::compare(
-                project,
-                &run,
-                &selected,
-                config,
-                &severities,
-                &dir,
-                !args.no_cache,
-            );
+            let c = state::compare(&analysis, config, &severities, &dir, !args.no_cache);
             match c {
                 Ok(c) => Some(c),
                 Err(e) => {
@@ -149,7 +140,7 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
         layers: &layers,
         no_sql,
     };
-    let findings = collect(project, &run, &shapes, &selected, &opts);
+    let findings = analysis.findings(&shapes, &opts);
 
     // Shapes of a full analysis in every layer, for later --state runs to compare with.
     if layers.is_empty() {
@@ -194,8 +185,8 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     let body = match args.format {
         Format::Text => text_report(
             project,
-            &run,
-            &selected,
+            run,
+            selected,
             &findings,
             comparison.as_ref(),
             &Scope {
@@ -207,8 +198,7 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
             },
         ),
         Format::Json => {
-            let mut summary =
-                summary_json(project, &run, &selected, &findings, comparison.as_ref());
+            let mut summary = summary_json(project, run, selected, &findings, comparison.as_ref());
             summary["layers"] = json!(
                 ALL_LAYERS
                     .iter()

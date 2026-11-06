@@ -1,9 +1,7 @@
 //! `--state`: which directory holds the base branch's dbt artifacts, and the comparison
 //! with them, logged for `-v`.
 
-use cardinal_dbt::{Project, RelationId};
-use cardinal_engine::{BaseShapes, Comparison, Config, RunResult, Severities};
-use std::collections::BTreeSet;
+use cardinal_engine::{Analysis, BaseShapes, Comparison, Config, Severities};
 use std::path::{Path, PathBuf};
 
 /// Where a relative state directory is looked for, in order: the working directory,
@@ -57,17 +55,15 @@ fn state_from_env(dir: &Path, root: &Path) -> Option<PathBuf> {
 }
 
 /// Analyze the base artifacts in `dir` and compare the selected models with their base
-/// versions; see [`cardinal_engine::compare`].
+/// versions; see [`Analysis::compare`].
 pub fn compare(
-    head: &Project,
-    head_run: &RunResult,
-    selected: &BTreeSet<RelationId>,
+    head: &Analysis<'_>,
     config: &Config,
     severities: &Severities,
     dir: &Path,
     use_cache: bool,
 ) -> Result<Comparison, String> {
-    let c = cardinal_engine::compare(head, head_run, selected, config, severities, dir, use_cache)?;
+    let c = head.compare(config, severities, dir, use_cache)?;
     match &c.base {
         BaseShapes::Saved(path) => tracing::debug!("--state: using {}", path.display()),
         BaseShapes::Analyzed(why) => tracing::debug!("--state: analyzing main's artifacts: {why}"),

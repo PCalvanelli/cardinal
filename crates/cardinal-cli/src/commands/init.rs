@@ -9,7 +9,7 @@ use cardinal_dbt::profile::profile_adapter;
 use cardinal_dbt::{Kind, LoadError, LoadWarning, Project, RelationId, supported_adapters};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::{Code, Layer, Severity};
-use cardinal_engine::{Config, Engine, Findings, Options, RunResult, closure, collect};
+use cardinal_engine::{Analysis, Config, Findings, Options};
 use cardinal_sql::StubSpec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -344,23 +344,21 @@ fn dialect_item(
     Dialect { name, note }
 }
 
-struct Analysis {
-    run: RunResult,
+struct FirstRun<'p> {
+    analysis: Analysis<'p>,
     findings: Findings,
-    selected: BTreeSet<RelationId>,
     stubs: Vec<NewStub>,
 }
 
 /// Plan every model, adding a stub to `config` for each unknown function until
 /// planning finds no new one; then collect the findings.
-fn analyze(project: &Project, config: &mut Config) -> Analysis {
+fn analyze<'p>(project: &'p Project, config: &mut Config) -> FirstRun<'p> {
     let selected: BTreeSet<RelationId> = project.checked().map(|r| r.id.clone()).collect();
-    let needed = closure(project, &selected);
     let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut run = Engine::new(project, config, true).run(&needed);
+    let mut analysis = Analysis::new(project, config, selected, true);
     for _ in 0..MAX_STUB_ROUNDS {
         let mut new = false;
-        for (id, r) in &run.results {
+        for (id, r) in &analysis.run.results {
             for d in &r.diagnostics {
                 let Some(f) = cardinal_check::unknown_function(d) else {
                     continue;
@@ -380,7 +378,7 @@ fn analyze(project: &Project, config: &mut Config) -> Analysis {
         for f in found.keys().filter(|f| !known.contains(*f)) {
             config.stub.push(StubSpec::scalar(f, "arg0"));
         }
-        run = Engine::new(project, config, true).run(&needed);
+        analysis = Analysis::new(project, config, analysis.selected, true);
     }
     let stubs = found
         .into_iter()
@@ -390,7 +388,7 @@ fn analyze(project: &Project, config: &mut Config) -> Analysis {
         })
         .collect();
 
-    let shapes = run.shapes(project);
+    let shapes = analysis.shapes();
     let severities = config.severities(&[], &[]).unwrap_or_else(|_| {
         Config::default()
             .severities(&[], &[])
@@ -409,11 +407,10 @@ fn analyze(project: &Project, config: &mut Config) -> Analysis {
         layers: &layers,
         no_sql: false,
     };
-    let findings = collect(project, &run, &shapes, &selected, &opts);
-    Analysis {
-        run,
+    let findings = analysis.findings(&shapes, &opts);
+    FirstRun {
+        analysis,
         findings,
-        selected,
         stubs,
     }
 }
@@ -435,7 +432,7 @@ fn baseline_item(
     list: &mut Checklist,
     p: &Project,
     config: &Config,
-    a: &Analysis,
+    a: &FirstRun<'_>,
     force: bool,
 ) -> Result<(), u8> {
     let path = config.baseline.path.as_ref().map_or_else(
@@ -524,8 +521,8 @@ fn ignore_cache(root: &Path) -> std::io::Result<Ignore> {
 }
 
 /// The lines `check` ends with: coverage, findings by code, and what to do next.
-fn print_summary(p: &Project, a: &Analysis) {
-    let cov = coverage(p, &a.run, &a.selected);
+fn print_summary(p: &Project, a: &FirstRun<'_>) {
+    let cov = coverage(p, &a.analysis.run, &a.analysis.selected);
     println!(
         "Analyzed {}: {} with a known key ({}%).",
         plural(cov.models, "model", "models"),
