@@ -1,13 +1,11 @@
-//! cardinal: a static grain checker for dbt projects. The binary is a thin wrapper over
-//! this library so benchmarks and xtask can drive the engine directly.
+//! cardinal: a static grain checker for dbt projects. This crate is the command line:
+//! arguments, output and the files commands write. The analysis itself is in
+//! `cardinal-engine`; the binary is a thin wrapper over this library so xtask can run
+//! commands directly.
 
 pub mod cli;
 pub mod commands;
 pub mod config;
-pub mod engine;
-pub mod guess;
-pub mod pipeline;
 pub mod state;
-pub mod synth;
 
 pub use cli::{CheckArgs, Format};

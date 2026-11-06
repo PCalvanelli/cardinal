@@ -5,10 +5,11 @@ pub mod describe;
 pub mod explain;
 pub mod guess;
 pub mod init;
+pub mod report;
 pub mod watch;
 
-use crate::config::Config;
-use cardinal_dbt::{Project, find_project_root, load_project};
+use cardinal_dbt::{LoadWarning, Project, find_project_root, load_project};
+use cardinal_engine::Config;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -84,10 +85,15 @@ pub fn load(dir: Option<PathBuf>) -> Result<(Project, Config), u8> {
         eprint_error(&e);
         EXIT_TOOL
     })?;
-    let project = load_project(&root).map_err(|e| {
+    let mut project = load_project(&root).map_err(|e| {
         eprint_error(&e.to_string());
         EXIT_TOOL
     })?;
+    if let Err(e) = project.save_guesses() {
+        project.warnings.push(LoadWarning::Guesses(format!(
+            "could not record guess results: {e}"
+        )));
+    }
     for w in &project.warnings {
         eprint_warning(&w.to_string());
     }
@@ -110,4 +116,12 @@ pub fn source_files(project: &Project) -> HashMap<String, String> {
 
 pub fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
+}
+
+pub fn init_threads(jobs: Option<usize>) {
+    if let Some(n) = jobs {
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(n.max(1))
+            .build_global();
+    }
 }

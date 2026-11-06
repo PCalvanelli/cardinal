@@ -3,8 +3,8 @@
 
 use super::{EXIT_TOOL, eprint_error, load, plural};
 use crate::cli::Format;
-use crate::engine::{Engine, RunResult};
 use cardinal_dbt::{Assumption, Kind, Project, Relation, RelationId, Status};
+use cardinal_engine::{Engine, RunResult};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -241,7 +241,7 @@ pub fn emit(project: &Project, entries: &[Entry]) -> String {
                 cols, to, to_cols, ..
             } if cols.len() == 1 => {
                 let target = match project.get(to) {
-                    Some(r) => ref_call(r),
+                    Some(r) => r.ref_call(),
                     None => format!("ref('{}')", to.0),
                 };
                 tests.push(TestYaml {
@@ -319,13 +319,6 @@ fn tests_need_dbt_utils(by_rel: &BTreeMap<RelationId, Vec<TestYaml>>) -> bool {
         .values()
         .flatten()
         .any(|t| t.lines[0].contains("dbt_utils"))
-}
-
-pub fn ref_call(r: &Relation) -> String {
-    match (&r.kind, r.display.split_once('.')) {
-        (Kind::Source, Some((src, table))) => format!("source('{src}', '{table}')"),
-        _ => format!("ref('{}')", r.display),
-    }
 }
 
 /// The `tests` and `columns` entries of one relation, under an item at `indent`.

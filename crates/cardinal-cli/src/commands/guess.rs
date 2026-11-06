@@ -1,14 +1,12 @@
 //! `cardinal guess`: write dbt tests for likely keys and references, so dbt checks them
 //! against the data and Cardinal can use the ones that hold.
 
-use super::check::{closure, coverage};
+use super::report::coverage;
 use super::{EXIT_TOOL, eprint_error, load, plural};
-use crate::config::Config;
-use crate::engine::Engine;
-use crate::guess::{self, Guess, Keyless, MARKER};
-use crate::pipeline::{self, Options};
-use cardinal_dbt::{Hypothesis, Kind, Project, RelationId};
-use cardinal_diag::Severity;
+use cardinal_dbt::guess::MARKER;
+use cardinal_dbt::{Guess, Hypothesis, Kind, Project, RelationId};
+use cardinal_engine::guess::{self, Keyless};
+use cardinal_engine::{Analysis, Config, Options};
 use cardinal_grain::UnknownReason;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -53,18 +51,10 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
             .unwrap_or(id.0.clone())
     };
     let selected: BTreeSet<RelationId> = project.models().map(|r| r.id.clone()).collect();
-    let engine = Engine::new(project, config, true);
-    let run = engine.run(&closure(project, &selected));
+    let a = Analysis::new(project, config, selected, true);
+    let (run, selected) = (&a.run, &a.selected);
     let severities = config.severities(&[], &[])?;
-    let opts = Options {
-        severities: &severities,
-        baseline: None,
-        state: None,
-        min_severity: Severity::Info,
-        layers: &BTreeSet::new(),
-        no_sql: false,
-    };
-    let findings = pipeline::collect(project, &run, &run.shapes(project), &selected, &opts);
+    let findings = a.findings(&a.shapes(), &Options::all_findings(&severities));
     let keyless: Vec<Keyless<'_>> = findings
         .root_causes
         .iter()
@@ -77,7 +67,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
             })
         })
         .collect();
-    let (guesses, no_candidate) = guess::propose(project, &run, &keyless, &project.guesses);
+    let (guesses, no_candidate) = guess::propose(project, run, &keyless, &project.guesses);
 
     let mut out = String::new();
     out.push_str(&checked_report(project, &mut |path| {
@@ -89,7 +79,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
     let mut written = 0;
     for g in &guesses {
         let path = abs.join(format!("{}.sql", g.test_name));
-        if write_if_changed(&path, &guess::test_file(project, g))
+        if write_if_changed(&path, &project.guess_test_file(g))
             .map_err(|e| format!("could not write {}: {e}", path.display()))?
         {
             written += 1;
@@ -141,20 +131,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
             + 2;
         for g in &guesses {
             let name = display(g.hypothesis.relation());
-            let claim = match &g.hypothesis {
-                Hypothesis::Key { columns, .. } => format!("one row per {}", columns.join(", ")),
-                Hypothesis::References {
-                    columns,
-                    to,
-                    to_columns,
-                    ..
-                } => format!(
-                    "every {} is in {}.{}",
-                    columns.join(", "),
-                    display(to),
-                    to_columns.join(", ")
-                ),
-            };
+            let claim = g.hypothesis.claim(&display);
             out.push_str(&format!("\n  {name:<w$}{claim}\n"));
             if !g.why.is_empty() {
                 out.push_str(&format!("  {:<w$}why: {}\n", "", g.why.join(", and ")));
@@ -202,7 +179,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
              labeled as a guess; each one dbt fails is dropped and never guessed again.\n",
         );
     } else if !guesses.is_empty() || !project.guesses.guesses.is_empty() {
-        let cov = coverage(project, &run, &selected);
+        let cov = coverage(project, run, selected);
         out.push_str(&format!(
             "Next: cardinal check ({} of {} have a known key now).\n",
             cov.known,

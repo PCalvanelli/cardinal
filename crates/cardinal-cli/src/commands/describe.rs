@@ -1,6 +1,6 @@
 use super::{EXIT_TOOL, eprint_error, load};
-use crate::engine::Engine;
 use cardinal_dbt::{Assumption, Kind, Project, RelationId};
+use cardinal_engine::Analysis;
 use cardinal_grain::{ColSet, EvidenceArena, GrainStatus, Half, Site};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -20,10 +20,8 @@ pub fn run(dir: Option<PathBuf>, query: &str) -> u8 {
         eprint_error(&format!("no model or source named `{query}`"));
         return EXIT_TOOL;
     };
-    let mut needed: BTreeSet<RelationId> = project.ancestors(&rel.id);
-    needed.insert(rel.id.clone());
-    let engine = Engine::new(&project, &config, true);
-    let run = engine.run(&needed);
+    let a = Analysis::new(&project, &config, BTreeSet::from([rel.id.clone()]), true);
+    let run = &a.run;
     let Some(result) = run.results.get(&rel.id) else {
         eprint_error("analysis produced no result");
         return EXIT_TOOL;

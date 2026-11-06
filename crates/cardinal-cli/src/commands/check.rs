@@ -1,15 +1,13 @@
-use super::{EXIT_TOOL, color, eprint_error, load, plural, source_files};
+use super::report::{count_by_code, count_by_layer, coverage, pct, unlock_hint};
+use super::{EXIT_TOOL, color, eprint_error, init_threads, load, plural, source_files};
 use crate::cli::{CheckArgs, Format};
-use crate::config::Config;
-use crate::engine::{Engine, RunResult};
-use crate::pipeline::{self, Findings, Options};
-use crate::state::{self, Comparison};
+use crate::state;
 use cardinal_check::SHAPES_FILE;
-use cardinal_dbt::{Hypothesis, Project, RelationId, select};
+use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::render::{self, Style};
 use cardinal_diag::{ALL_LAYERS, Code, Layer, Severity};
-use cardinal_grain::UnknownReason;
+use cardinal_engine::{Analysis, Comparison, Config, Findings, Options, RunResult, selection};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -21,54 +19,6 @@ pub fn run(dir: Option<PathBuf>, args: CheckArgs) -> u8 {
         Err(c) => return c,
     };
     run_loaded(&project, &config, &args)
-}
-
-pub fn init_threads(jobs: Option<usize>) {
-    if let Some(n) = jobs {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(n.max(1))
-            .build_global();
-    }
-}
-
-/// Models to report on, from --select, positional selectors and --changed-since.
-pub fn selection(project: &Project, args: &CheckArgs) -> Result<BTreeSet<RelationId>, String> {
-    let mut selectors = args.select.clone();
-    selectors.extend(args.positional.iter().cloned());
-    let mut sel = if selectors.is_empty() && args.changed_since.is_none() {
-        project.checked().map(|r| r.id.clone()).collect()
-    } else {
-        select::select(project, &selectors)?
-    };
-    if let Some(r) = &args.changed_since {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&project.root)
-            .args(["diff", "--name-only", "--relative", r])
-            .output()
-            .map_err(|e| format!("could not run git: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "git diff {r} failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-        sel.extend(select::changed(project, &files));
-    }
-    Ok(sel)
-}
-
-/// The selected models plus everything upstream of them, which analysis needs.
-pub fn closure(project: &Project, selected: &BTreeSet<RelationId>) -> BTreeSet<RelationId> {
-    let mut needed = selected.clone();
-    for id in selected {
-        needed.extend(project.ancestors(id));
-    }
-    needed
 }
 
 pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
@@ -114,7 +64,9 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     } else {
         layers
     };
-    let selected = match selection(project, args) {
+    let mut selectors = args.select.clone();
+    selectors.extend(args.positional.iter().cloned());
+    let selected = match selection(project, &selectors, args.changed_since.as_deref()) {
         Ok(s) => s,
         Err(e) => {
             eprint_error(&e);
@@ -124,12 +76,13 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     // Graph and node checks read only the manifest and catalog: with neither code nor
     // operator selected, no SQL is analyzed, so this works on the output of dbt parse.
     let no_sql = !layers.is_empty() && layers.iter().all(|l| !l.needs_sql());
-    let run = if no_sql {
-        RunResult::empty()
+    let analysis = if no_sql {
+        Analysis::without_sql(project, selected)
     } else {
-        Engine::new(project, config, !args.no_cache).run(&closure(project, &selected))
+        Analysis::new(project, config, selected, !args.no_cache)
     };
-    let mut shapes = run.shapes(project);
+    let (run, selected) = (&analysis.run, &analysis.selected);
+    let mut shapes = analysis.shapes();
     // A baseline records this branch's own findings; a comparison with main would add
     // P003 findings to it and hide findings main has, so --update-baseline skips it.
     // P003 is an operator-layer check, so it also needs that layer.
@@ -145,20 +98,12 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
         }
         None
     } else {
-        state::state_for(args, &project.root)
+        state::state_dir(args.state.as_deref(), &project.root)
     };
     let comparison = match state_dir {
         None => None,
         Some(dir) => {
-            let c = state::compare(
-                project,
-                &run,
-                &selected,
-                config,
-                &severities,
-                &dir,
-                !args.no_cache,
-            );
+            let c = state::compare(&analysis, config, &severities, &dir, !args.no_cache);
             match c {
                 Ok(c) => Some(c),
                 Err(e) => {
@@ -195,7 +140,7 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
         layers: &layers,
         no_sql,
     };
-    let findings = pipeline::collect(project, &run, &shapes, &selected, &opts);
+    let findings = analysis.findings(&shapes, &opts);
 
     // Shapes of a full analysis in every layer, for later --state runs to compare with.
     if layers.is_empty() {
@@ -240,8 +185,8 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     let body = match args.format {
         Format::Text => text_report(
             project,
-            &run,
-            &selected,
+            run,
+            selected,
             &findings,
             comparison.as_ref(),
             &Scope {
@@ -253,8 +198,7 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
             },
         ),
         Format::Json => {
-            let mut summary =
-                summary_json(project, &run, &selected, &findings, comparison.as_ref());
+            let mut summary = summary_json(project, run, selected, &findings, comparison.as_ref());
             summary["layers"] = json!(
                 ALL_LAYERS
                     .iter()
@@ -286,32 +230,8 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
     }
 }
 
-pub struct Coverage {
-    pub models: usize,
-    pub known: usize,
-}
-
-pub fn coverage(project: &Project, run: &RunResult, selected: &BTreeSet<RelationId>) -> Coverage {
-    let models: Vec<&RelationId> = selected
-        .iter()
-        .filter(|id| project.get(id).is_some_and(|r| r.is_model()))
-        .collect();
-    let known = models
-        .iter()
-        .filter(|id| {
-            run.results
-                .get(**id)
-                .is_some_and(|r| r.summary.has_known_grain())
-        })
-        .count();
-    Coverage {
-        models: models.len(),
-        known,
-    }
-}
-
 /// Declared exactly-once contracts in the selection: (proven, not proven).
-pub fn contracts(
+fn contracts(
     project: &Project,
     run: &RunResult,
     selected: &BTreeSet<RelationId>,
@@ -336,83 +256,6 @@ pub fn contracts(
         }
     }
     (proven, not)
-}
-
-pub fn pct(a: usize, b: usize) -> usize {
-    if b == 0 { 100 } else { (a * 100 + b / 2) / b }
-}
-
-/// The `Next:` line when sources without a known key hide models: test Cardinal's
-/// pending guesses, make some, or declare the keys.
-pub fn unlock_hint(project: &Project, findings: &Findings, see_coverage: bool) -> Option<String> {
-    let sources: Vec<&crate::pipeline::RootCause> = findings
-        .root_causes
-        .iter()
-        .filter(|r| matches!(r.reason, UnknownReason::SourceWithoutKey(_)))
-        .collect();
-    if sources.is_empty() {
-        return None;
-    }
-    let top: Vec<&crate::pipeline::RootCause> = sources.iter().take(3).copied().collect();
-    let covered: BTreeSet<&RelationId> = top.iter().flat_map(|r| r.affected.iter()).collect();
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|x| x.display.clone())
-            .unwrap_or(id.0.clone())
-    };
-    let names: Vec<String> = top.iter().map(|r| display(&r.root)).collect();
-    let n = top.len();
-    let m = covered.len();
-    let is_key_of = |h: &Hypothesis, id: &RelationId| matches!(h, Hypothesis::Key { relation, .. } if relation == id);
-    // Guess tests dbt has not run yet.
-    let pending: Vec<String> = top
-        .iter()
-        .filter(|r| {
-            project.guess_tests.iter().any(|t| {
-                is_key_of(&t.hypothesis, &r.root) && project.guesses.get(&t.hypothesis).is_none()
-            })
-        })
-        .map(|r| display(&r.root))
-        .collect();
-    if !pending.is_empty() {
-        return Some(format!(
-            "run dbt test --select tag:cardinal to check Cardinal's guessed {} for {}.",
-            if pending.len() == 1 { "key" } else { "keys" },
-            pending.join(", ")
-        ));
-    }
-    let unguessed = top.iter().any(|r| {
-        !project
-            .guesses
-            .guesses
-            .iter()
-            .any(|g| is_key_of(&g.hypothesis, &r.root))
-    });
-    let hide = format!(
-        "{} without a known key {} {} {} from being checked: {}",
-        plural(n, "source", "sources"),
-        if n == 1 { "keeps" } else { "keep" },
-        m,
-        if m == 1 { "model" } else { "models" },
-        names.join(", ")
-    );
-    let see = if see_coverage {
-        " (see cardinal coverage)"
-    } else {
-        ""
-    };
-    Some(if unguessed {
-        format!(
-            "{hide}. Run cardinal guess so dbt can test likely keys, or declare {}{see}.",
-            if n == 1 { "it" } else { "them" }
-        )
-    } else {
-        format!(
-            "{hide}. Declare {} in YAML{see}.",
-            if n == 1 { "its key" } else { "their keys" }
-        )
-    })
 }
 
 /// What a run checked: the layers (empty = all), and whether it read any SQL.
@@ -486,7 +329,7 @@ fn text_report(
         out.push_str(&g);
     }
     // "Findings: 1 error, 1 warning (node: G004 ×1; operator: G001 ×1)."
-    let groups: Vec<String> = pipeline::count_by_layer(&findings.reported)
+    let groups: Vec<String> = count_by_layer(&findings.reported)
         .iter()
         .map(|(layer, codes)| {
             let codes: Vec<String> = codes.iter().map(|(c, n)| format!("{c} ×{n}")).collect();
@@ -607,7 +450,7 @@ fn summary_json(
         "models_with_known_grain": cov.known,
         "contracts_proven": proven,
         "contracts_not_proven": not,
-        "findings_by_code": pipeline::count_by_code(&findings.reported).into_iter().map(|(c, n)| (c.to_string(), n)).collect::<std::collections::BTreeMap<_, _>>(),
+        "findings_by_code": count_by_code(&findings.reported).into_iter().map(|(c, n)| (c.to_string(), n)).collect::<std::collections::BTreeMap<_, _>>(),
         "findings_by_layer": ALL_LAYERS.iter().map(|l| (l.to_string(), findings.reported.iter().filter(|d| d.code.layer() == *l).count())).collect::<std::collections::BTreeMap<_, _>>(),
         "baselined": findings.baselined,
         "suppressed": findings.suppressed,

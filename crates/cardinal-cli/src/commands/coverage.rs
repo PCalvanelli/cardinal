@@ -1,10 +1,8 @@
-use super::check::{closure, coverage, init_threads};
-use super::{load, plural};
+use super::report::{coverage, pct, unlock_hint};
+use super::{init_threads, load, plural};
 use crate::cli::Format;
-use crate::engine::Engine;
-use crate::pipeline::{self, Options};
 use cardinal_dbt::RelationId;
-use cardinal_diag::Severity;
+use cardinal_engine::{Analysis, Findings, Options};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -18,8 +16,8 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
     };
     init_threads(None);
     let selected: BTreeSet<RelationId> = project.models().map(|r| r.id.clone()).collect();
-    let engine = Engine::new(&project, &config, true);
-    let run = engine.run(&closure(&project, &selected));
+    let a = Analysis::new(&project, &config, selected, true);
+    let (run, selected) = (&a.run, &a.selected);
     let severities = match config.severities(&[], &[]) {
         Ok(s) => s,
         Err(e) => {
@@ -27,16 +25,8 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
             return super::EXIT_TOOL;
         }
     };
-    let opts = Options {
-        severities: &severities,
-        baseline: None,
-        state: None,
-        min_severity: Severity::Info,
-        layers: &BTreeSet::new(),
-        no_sql: false,
-    };
-    let findings = pipeline::collect(&project, &run, &run.shapes(&project), &selected, &opts);
-    let cov = coverage(&project, &run, &selected);
+    let findings = a.findings(&a.shapes(), &Options::all_findings(&severities));
+    let cov = coverage(&project, run, selected);
     let planned = selected
         .iter()
         .filter(|id| run.results.get(*id).is_some_and(|r| r.planned))
@@ -73,7 +63,6 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return 0;
     }
-    let pct = |a: usize, b: usize| if b == 0 { 100 } else { (a * 100 + b / 2) / b };
     println!(
         "{} of {} have a known key ({}%); Cardinal could read the SQL of {} ({}%).",
         cov.known,
@@ -105,14 +94,14 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
             }
         }
     }
-    if let Some(h) = super::check::unlock_hint(&project, &findings, false) {
+    if let Some(h) = unlock_hint(&project, &findings, false) {
         println!();
         println!("Next: {h}");
     }
     0
 }
 
-fn root_causes(findings: &crate::pipeline::Findings, display: &dyn Fn(&RelationId) -> String) {
+fn root_causes(findings: &Findings, display: &dyn Fn(&RelationId) -> String) {
     println!();
     println!("To check the rest, fix these, most models first:");
     let rows: Vec<(String, String, usize)> = findings

@@ -2,9 +2,8 @@
 //! release builds, so they are ignored by default; CI runs them with
 //! `cargo test --release -p cardinal-cli --test speed -- --ignored`.
 
-use cardinal_cli::config::Config;
-use cardinal_cli::engine::Engine;
-use cardinal_cli::synth::{SynthSpec, edit_model, generate};
+use cardinal_engine::{Config, Engine};
+use cardinal_synth::{SynthSpec, edit_model, generate};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -52,11 +51,8 @@ fn speed_targets() {
 #[test]
 #[ignore]
 fn state_with_and_without_shapes() {
-    use cardinal_cli::commands::check::closure;
-    use cardinal_cli::pipeline::{self, Options};
-    use cardinal_cli::state::compare;
-    use cardinal_diag::Severity;
     use cardinal_diag::baseline::Baseline;
+    use cardinal_engine::{Analysis, Options};
 
     let dir = std::env::temp_dir().join(format!("cardinal-speed-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -74,39 +70,26 @@ fn state_with_and_without_shapes() {
     let sev = config.severities(&[], &[]).unwrap();
     let head = cardinal_dbt::load_project(&root).unwrap();
     let selected: BTreeSet<_> = head.models().map(|r| r.id.clone()).collect();
-    let run = Engine::new(&head, &config, false).run(&closure(&head, &selected));
+    let head = Analysis::new(&head, &config, selected, false);
 
     let t = Instant::now();
-    let analyzed = compare(&head, &run, &selected, &config, &sev, &state, false).unwrap();
+    let analyzed = head.compare(&config, &sev, &state, false).unwrap();
     let analyzing = t.elapsed();
 
     // Main's shapes, as main's own `cardinal check` writes them.
     let base = cardinal_dbt::load_state(&root, &state).unwrap();
     let base_selected: BTreeSet<_> = base.models().map(|r| r.id.clone()).collect();
-    let base_run = Engine::new(&base, &config, false).run(&closure(&base, &base_selected));
-    let mut shapes = base_run.shapes(&base);
-    let findings = pipeline::collect(
-        &base,
-        &base_run,
-        &shapes,
-        &base_selected,
-        &Options {
-            severities: &sev,
-            baseline: None,
-            state: None,
-            min_severity: Severity::Info,
-            layers: &BTreeSet::new(),
-            no_sql: false,
-        },
-    );
+    let base = Analysis::new(&base, &config, base_selected, false);
+    let mut shapes = base.shapes();
+    let findings = base.findings(&shapes, &Options::all_findings(&sev));
     shapes.findings = Baseline::from_findings(&findings.all);
-    shapes.reported_for = base_selected;
+    shapes.reported_for = base.selected.clone();
     shapes
         .save(&state.join(cardinal_check::SHAPES_FILE))
         .unwrap();
 
     let t = Instant::now();
-    let from_file = compare(&head, &run, &selected, &config, &sev, &state, false).unwrap();
+    let from_file = head.compare(&config, &sev, &state, false).unwrap();
     let reading = t.elapsed();
     eprintln!(
         "--state on 1,000 models: analyzing main {analyzing:?}, reading main's shapes {reading:?}"

@@ -30,11 +30,11 @@ fn main() -> Result<()> {
                     .context("usage: cargo xtask synth DIR [MODELS]")?,
             );
             let n = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000);
-            let spec = cardinal_cli::synth::SynthSpec {
+            let spec = cardinal_synth::SynthSpec {
                 models: n,
                 ..Default::default()
             };
-            let root = cardinal_cli::synth::generate(&dir, spec)?;
+            let root = cardinal_synth::generate(&dir, spec)?;
             println!("wrote a {n}-model project to {}", root.display());
             Ok(())
         }
@@ -196,7 +196,7 @@ fn run_guesses(path: &Path) -> Result<()> {
         .args(["docs", "generate", "--profiles-dir", "."])
         .current_dir(path))?;
     std::fs::write(&results, saved)?;
-    // Loading the project records the results in .cardinal/guesses.json.
+    // Any command records the results in .cardinal/guesses.json when it loads the project.
     cardinal_dbt_load(path)
 }
 

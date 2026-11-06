@@ -1,10 +1,10 @@
 //! From per-model diagnostics to the findings a run reports: project-wide checks,
 //! suppressions, severities, baseline, and the minimum severity.
 
+use crate::comparison::Comparison;
 use crate::config::{Level, Severities};
 use crate::engine::ProjectLocator;
 use crate::engine::RunResult;
-use crate::state::Comparison;
 use cardinal_check::{ProjectContext, Shapes, project_checks, root_causes};
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
@@ -47,7 +47,25 @@ pub struct Options<'a> {
     pub no_sql: bool,
 }
 
-pub fn collect(
+/// No layers selected: every layer.
+static EVERY_LAYER: BTreeSet<Layer> = BTreeSet::new();
+
+impl<'a> Options<'a> {
+    /// Every finding in every layer, with no baseline or comparison: what `coverage`,
+    /// `guess` and the base branch's analysis read.
+    pub fn all_findings(severities: &'a Severities) -> Self {
+        Options {
+            severities,
+            baseline: None,
+            state: None,
+            min_severity: Severity::Info,
+            layers: &EVERY_LAYER,
+            no_sql: false,
+        }
+    }
+}
+
+pub(crate) fn collect(
     project: &Project,
     run: &RunResult,
     shapes: &Shapes,
@@ -244,7 +262,7 @@ pub fn collect(
 }
 
 /// Whether findings with `code` are reported when `layers` are selected (empty = all).
-pub fn layer_selected(code: Code, layers: &BTreeSet<Layer>) -> bool {
+fn layer_selected(code: Code, layers: &BTreeSet<Layer>) -> bool {
     layers.is_empty() || layers.contains(&code.layer())
 }
 
@@ -260,24 +278,4 @@ fn without_blocked(raw: &mut Vec<Diagnostic>) {
     raw.retain(|d| {
         d.code.is_tool_error() || failed.get(&d.relation).is_none_or(|l| d.code.layer() <= *l)
     });
-}
-
-/// Counts per code, grouped by layer.
-pub fn count_by_layer(findings: &[Diagnostic]) -> BTreeMap<Layer, BTreeMap<Code, usize>> {
-    let mut m: BTreeMap<Layer, BTreeMap<Code, usize>> = BTreeMap::new();
-    for d in findings {
-        *m.entry(d.code.layer())
-            .or_default()
-            .entry(d.code)
-            .or_default() += 1;
-    }
-    m
-}
-
-pub fn count_by_code(findings: &[Diagnostic]) -> BTreeMap<Code, usize> {
-    let mut m = BTreeMap::new();
-    for d in findings {
-        *m.entry(d.code).or_default() += 1;
-    }
-    m
 }

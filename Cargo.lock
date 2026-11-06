@@ -504,13 +504,13 @@ name = "cardinal-cli"
 version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
- "blake3",
- "cardinal-cache",
  "cardinal-check",
  "cardinal-dbt",
  "cardinal-diag",
+ "cardinal-engine",
  "cardinal-grain",
  "cardinal-sql",
+ "cardinal-synth",
  "clap",
  "criterion",
  "insta",
@@ -527,6 +527,8 @@ dependencies = [
 name = "cardinal-dbt"
 version = "0.1.0-beta.6"
 dependencies = [
+ "blake3",
+ "insta",
  "petgraph",
  "serde",
  "serde_json",
@@ -539,6 +541,23 @@ dependencies = [
  "cardinal-sql",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cardinal-engine"
+version = "0.1.0-beta.6"
+dependencies = [
+ "cardinal-cache",
+ "cardinal-check",
+ "cardinal-dbt",
+ "cardinal-diag",
+ "cardinal-grain",
+ "cardinal-sql",
+ "rayon",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -566,6 +585,13 @@ dependencies = [
  "datafusion-functions-window",
  "datafusion-sql",
  "serde",
+]
+
+[[package]]
+name = "cardinal-synth"
+version = "0.1.0-beta.6"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -3463,6 +3489,7 @@ version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "cardinal-cli",
+ "cardinal-synth",
  "serde_json",
 ]
 
