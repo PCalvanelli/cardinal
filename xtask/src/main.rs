@@ -291,9 +291,14 @@ impl Check for NewCheck {{
         "Created:\n  {}\n  docs/explain/{code}.md\n  fixtures/{lower}/",
         src.display()
     );
-    println!("Then: add Code::{code} in crates/cardinal-diag/src/code.rs, register the check in");
-    println!("cardinal_check::model_checks(), add the explain page in cardinal-cli's explain.rs,");
-    println!("and run `cargo xtask fixtures {lower}` followed by `cargo insta review`.");
+    println!("Then: add {code} to the codes! table in crates/cardinal-diag/src/code.rs, register");
+    println!(
+        "the check in cardinal_check::model_checks(), bump CHECKS_FINGERPRINT next to it, add"
+    );
+    println!(
+        "the explain page in cardinal-cli's explain.rs, and run `cargo xtask fixtures {lower}`"
+    );
+    println!("followed by `cargo insta review`.");
     Ok(())
 }
 
