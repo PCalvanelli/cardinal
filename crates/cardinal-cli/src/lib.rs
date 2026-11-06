@@ -6,7 +6,6 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
-pub mod guess;
 pub mod state;
 
 pub use cli::{CheckArgs, Format};

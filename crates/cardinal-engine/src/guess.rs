@@ -14,8 +14,8 @@
 //! Columns a model deduplicates on with `row_number() ... = 1` repeat in the raw table,
 //! so they are never guessed as its key.
 
+use crate::engine::RunResult;
 use cardinal_dbt::{Guess, GuessLog, Hypothesis, Kind, Project, Relation, RelationId};
-use cardinal_engine::RunResult;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Tables to guess keys for, at most.
@@ -149,6 +149,10 @@ pub fn key_candidates(rel: &Relation, usage: &Usage) -> Vec<(Vec<String>, Vec<St
         .take(MAX_PER_TABLE)
         .map(|(_, k, why)| (k, why))
         .collect()
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", verb(n, one, many))
 }
 
 fn verb<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
@@ -576,7 +580,7 @@ pub fn propose(
                 why,
                 unlocks: format!(
                     "lets Cardinal check {} that {} on it",
-                    crate::commands::plural(k.hides.len(), "model", "models"),
+                    plural(k.hides.len(), "model", "models"),
                     verb(k.hides.len(), "depends", "depend")
                 ),
             });

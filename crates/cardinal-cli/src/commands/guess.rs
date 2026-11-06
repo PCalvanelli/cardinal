@@ -3,9 +3,9 @@
 
 use super::report::coverage;
 use super::{EXIT_TOOL, eprint_error, load, plural};
-use crate::guess::{self, Keyless};
 use cardinal_dbt::guess::MARKER;
 use cardinal_dbt::{Guess, Hypothesis, Kind, Project, RelationId};
+use cardinal_engine::guess::{self, Keyless};
 use cardinal_engine::{Analysis, Config, Options};
 use cardinal_grain::UnknownReason;
 use std::collections::BTreeSet;

@@ -7,6 +7,7 @@ mod analysis;
 mod comparison;
 mod config;
 mod engine;
+pub mod guess;
 mod pipeline;
 mod selection;
 mod state;
