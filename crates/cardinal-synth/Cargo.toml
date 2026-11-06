@@ -1,0 +1,10 @@
+[package]
+name = "cardinal-synth"
+description = "Synthetic dbt projects for Cardinal's benchmarks and speed tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true

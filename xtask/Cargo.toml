@@ -8,3 +8,4 @@ publish = false
 anyhow.workspace = true
 serde_json.workspace = true
 cardinal-cli = { path = "../crates/cardinal-cli" }
+cardinal-synth.workspace = true

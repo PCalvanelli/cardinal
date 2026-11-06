@@ -511,6 +511,7 @@ dependencies = [
  "cardinal-diag",
  "cardinal-grain",
  "cardinal-sql",
+ "cardinal-synth",
  "clap",
  "criterion",
  "insta",
@@ -566,6 +567,13 @@ dependencies = [
  "datafusion-functions-window",
  "datafusion-sql",
  "serde",
+]
+
+[[package]]
+name = "cardinal-synth"
+version = "0.1.0-beta.6"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -3463,6 +3471,7 @@ version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "cardinal-cli",
+ "cardinal-synth",
  "serde_json",
 ]
 

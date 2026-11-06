@@ -39,4 +39,5 @@ cardinal-grain = { path = "crates/cardinal-grain" }
 cardinal-check = { path = "crates/cardinal-check" }
 cardinal-diag = { path = "crates/cardinal-diag" }
 cardinal-cache = { path = "crates/cardinal-cache" }
+cardinal-synth = { path = "crates/cardinal-synth" }
 datafusion-functions-nested = { version = "=55.2.0", default-features = false }

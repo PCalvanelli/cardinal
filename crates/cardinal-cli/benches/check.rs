@@ -3,7 +3,7 @@
 
 use cardinal_cli::config::Config;
 use cardinal_cli::engine::Engine;
-use cardinal_cli::synth::{SynthSpec, edit_model, generate};
+use cardinal_synth::{SynthSpec, edit_model, generate};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::collections::BTreeSet;
 
