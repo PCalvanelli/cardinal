@@ -294,6 +294,7 @@ fn sarif_level(s: Severity) -> &'static str {
 mod tests {
     use super::*;
     use crate::{Code, Fix};
+    use cardinal_dbt::RelationId;
     use cardinal_sql::{LineCol, SqlSpan};
     use std::collections::HashMap;
 
@@ -318,7 +319,7 @@ mod tests {
         let d = Diagnostic {
             code: Code::G001,
             severity: Severity::Error,
-            relation: "model.shop.daily_revenue".into(),
+            relation: RelationId("model.shop.daily_revenue".into()),
             message: "aggregation fans out".into(),
             primary: Label {
                 file: "models/marts/daily_revenue.sql".into(),

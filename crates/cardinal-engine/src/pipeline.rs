@@ -167,8 +167,8 @@ pub(crate) fn collect(
             let model = project
                 .models()
                 .find(|r| r.file == s.file)
-                .map(|r| r.id.0.clone())
-                .unwrap_or_default();
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| RelationId(String::new()));
             let codes: Vec<String> = s.codes.iter().map(|c| c.to_string()).collect();
             kept.push(Diagnostic {
                 code: Code::G005,
@@ -270,7 +270,7 @@ fn layer_selected(code: Code, layers: &BTreeSet<Layer>) -> bool {
 /// some layer (an E-code), its findings from later layers are dropped: they would rest
 /// on what failed.
 fn without_blocked(raw: &mut Vec<Diagnostic>) {
-    let mut failed: BTreeMap<String, Layer> = BTreeMap::new();
+    let mut failed: BTreeMap<RelationId, Layer> = BTreeMap::new();
     for d in raw.iter().filter(|d| d.code.is_tool_error()) {
         let l = failed.entry(d.relation.clone()).or_insert(d.code.layer());
         *l = (*l).min(d.code.layer());

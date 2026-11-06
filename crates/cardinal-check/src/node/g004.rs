@@ -144,7 +144,7 @@ pub fn unknown_grain(
         let d = Diagnostic {
             code: Code::G004,
             severity: Code::G004.default_severity(),
-            relation: root.0.clone(),
+            relation: root.clone(),
             message,
             primary: Label {
                 file: rel.file.clone(),

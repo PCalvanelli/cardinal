@@ -180,7 +180,7 @@ fn check_aggregate(
         out.push(Diagnostic {
             code: Code::G013,
             severity: Code::G013.default_severity(),
-            relation: model.relation.0.clone(),
+            relation: model.relation.clone(),
             message: format!(
                 "{written} counts 1, not 0, for {kept} rows with no {filled} row"
             ),

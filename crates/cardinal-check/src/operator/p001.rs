@@ -54,7 +54,7 @@ pub fn contract_findings(
             out.push(Diagnostic {
                 code: Code::P001,
                 severity: Code::P001.default_severity(),
-                relation: model.0.clone(),
+                relation: model.clone(),
                 message: format!(
                     "exactly_once of {} can't be checked: Cardinal couldn't read the model's SQL",
                     display(target)
@@ -133,7 +133,7 @@ fn not_proven(
     out.push(Diagnostic {
         code: Code::P001,
         severity: Code::P001.default_severity(),
-        relation: model.0.clone(),
+        relation: model.clone(),
         message,
         primary,
         secondary,
@@ -254,7 +254,7 @@ fn unchecked(
     out.push(Diagnostic {
         code: Code::P002,
         severity: Code::P002.default_severity(),
-        relation: rel.id.0.clone(),
+        relation: rel.id.clone(),
         message: format!(
             "exactly_once of {} rests on {n} unchecked {}",
             v.display,

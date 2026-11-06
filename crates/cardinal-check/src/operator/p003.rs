@@ -443,7 +443,7 @@ fn finding(
     Diagnostic {
         code: Code::P003,
         severity: g.severity,
-        relation: model.0.clone(),
+        relation: model.clone(),
         message: headline.unwrap_or_else(|| Code::P003.title().into()),
         primary: g.primary,
         secondary: g.secondary,

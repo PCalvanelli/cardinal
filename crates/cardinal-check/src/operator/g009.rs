@@ -91,7 +91,7 @@ fn build(
     Diagnostic {
         code: Code::G009,
         severity: Severity::Error,
-        relation: model.relation.0.clone(),
+        relation: model.relation.clone(),
         message: Code::G009.title().into(),
         primary: cx.locator.label(&model.relation, call.span, label.clone()),
         secondary: vec![declared],

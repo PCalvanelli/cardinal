@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+cardinal-dbt.workspace = true
 cardinal-sql.workspace = true
 serde.workspace = true
 serde_json.workspace = true

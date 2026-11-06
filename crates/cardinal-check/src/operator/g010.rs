@@ -88,7 +88,7 @@ fn check_union(
             out.push(Diagnostic {
                 code: Code::G010,
                 severity,
-                relation: model.relation.0.clone(),
+                relation: model.relation.clone(),
                 message: Code::G010.title().into(),
                 primary: cx
                     .locator

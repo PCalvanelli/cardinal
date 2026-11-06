@@ -117,7 +117,7 @@ fn push_not_in(
     out.push(Diagnostic {
         code: Code::G011,
         severity: Code::G011.default_severity(),
-        relation: model.relation.0.clone(),
+        relation: model.relation.clone(),
         message: "NOT IN keeps no rows when the values it checks include a null".into(),
         primary: cx.locator.label(
             &model.relation,
@@ -265,7 +265,7 @@ fn outer_join_turned_inner(
             out.push(Diagnostic {
                 code: Code::G011,
                 severity: Code::G011.default_severity(),
-                relation: model.relation.0.clone(),
+                relation: model.relation.clone(),
                 message: format!("WHERE on {filled}'s columns turns the {kind} join into an inner join"),
                 primary: cx.locator.label(
                     &model.relation,

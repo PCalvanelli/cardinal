@@ -68,7 +68,7 @@ pub fn plan_failure(
     Diagnostic {
         code,
         severity: code.default_severity(),
-        relation: rel.id.0.clone(),
+        relation: rel.id.clone(),
         message,
         primary: locator.label(&rel.id, failure.and_then(|f| f.span), label),
         secondary: vec![],
