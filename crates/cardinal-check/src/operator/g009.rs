@@ -7,9 +7,8 @@
 //! `U ⊄ closure(G)` on I, so one group can hold rows in different units. A filter to one
 //! unit (`where currency = 'USD'`) puts it in closure(∅).
 
-use crate::operator::g001::check_site;
 use crate::operator::g008::Call;
-use crate::sites::{Site, aggregate_sites, bare_group};
+use crate::sites::{Site, bare_group, sites_without_fan_out};
 use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity};
 use cardinal_grain::{AnalyzedModel, RelationFacts, Unit, aggregate, summed_col};
@@ -24,7 +23,7 @@ impl Check for MixedUnits {
 
     fn run(&self, cx: &CheckContext<'_>, model: &AnalyzedModel, out: &mut Vec<Diagnostic>) {
         let text = model.text();
-        for site in aggregate_sites(&model.plan) {
+        for site in sites_without_fan_out(cx, model) {
             if let Some(d) = check(cx, model, &text, &site) {
                 out.push(d);
             }
@@ -49,10 +48,6 @@ fn check(
     if let Some(x) = &unit.unit
         && x.is_subset(&input.closure(&bare_group(schema, site.group_exprs)))
     {
-        return None;
-    }
-    // A join that repeats the amounts is the bigger problem, and G001 reports it.
-    if check_site(cx, model, text, site).is_some() {
         return None;
     }
     let call = Call::new(text, site, schema, c);

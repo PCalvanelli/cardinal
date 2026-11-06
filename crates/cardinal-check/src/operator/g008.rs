@@ -17,8 +17,7 @@
 //! G counts only plain column references. `group by date_trunc('month', day)` puts many
 //! days in one group, so it must not count as `group by day`.
 
-use crate::operator::g001::check_site;
-use crate::sites::{Site, aggregate_sites, bare_group};
+use crate::sites::{Site, bare_group, sites_without_fan_out};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};
 use cardinal_grain::{
@@ -38,7 +37,7 @@ impl Check for NonAdditiveSum {
 
     fn run(&self, cx: &CheckContext<'_>, model: &AnalyzedModel, out: &mut Vec<Diagnostic>) {
         let text = model.text();
-        for site in aggregate_sites(&model.plan) {
+        for site in sites_without_fan_out(cx, model) {
             if let Some(d) = check(cx, model, &text, &site) {
                 out.push(d);
             }
@@ -87,10 +86,6 @@ fn check(
                 return None;
             }
         }
-    }
-    // A join that repeats the values is the bigger problem, and G001 reports it.
-    if check_site(cx, model, text, site).is_some() {
-        return None;
     }
     let call = Call::new(text, site, schema, c);
     Some(match fact.distinct() {
