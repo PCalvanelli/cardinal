@@ -4,14 +4,12 @@
 
 use super::report::{count_by_code, coverage, pct, unlock_hint};
 use super::{EXIT_TOOL, color, plural, root};
-use crate::config::{Config, NewStub, stub_blocks, template};
-use crate::engine::{Engine, RunResult};
-use crate::pipeline::{self, Findings, Options};
-use crate::selection::closure;
+use crate::config::{NewStub, stub_blocks, template};
 use cardinal_dbt::profile::profile_adapter;
 use cardinal_dbt::{Kind, LoadError, LoadWarning, Project, RelationId, supported_adapters};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::{Code, Layer, Severity};
+use cardinal_engine::{Config, Engine, Findings, Options, RunResult, closure, collect};
 use cardinal_sql::StubSpec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -411,7 +409,7 @@ fn analyze(project: &Project, config: &mut Config) -> Analysis {
         layers: &layers,
         no_sql: false,
     };
-    let findings = pipeline::collect(project, &run, &shapes, &selected, &opts);
+    let findings = collect(project, &run, &shapes, &selected, &opts);
     Analysis {
         run,
         findings,

@@ -1,10 +1,10 @@
 //! From per-model diagnostics to the findings a run reports: project-wide checks,
 //! suppressions, severities, baseline, and the minimum severity.
 
+use crate::comparison::Comparison;
 use crate::config::{Level, Severities};
 use crate::engine::ProjectLocator;
 use crate::engine::RunResult;
-use crate::state::Comparison;
 use cardinal_check::{ProjectContext, Shapes, project_checks, root_causes};
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;

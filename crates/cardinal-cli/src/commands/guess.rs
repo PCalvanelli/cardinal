@@ -3,13 +3,10 @@
 
 use super::report::coverage;
 use super::{EXIT_TOOL, eprint_error, load, plural};
-use crate::config::Config;
-use crate::engine::Engine;
 use crate::guess::{self, Guess, Keyless, MARKER};
-use crate::pipeline::{self, Options};
-use crate::selection::closure;
 use cardinal_dbt::{Hypothesis, Kind, Project, RelationId};
 use cardinal_diag::Severity;
+use cardinal_engine::{Config, Engine, Options, closure, collect};
 use cardinal_grain::UnknownReason;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -65,7 +62,7 @@ pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> 
         layers: &BTreeSet::new(),
         no_sql: false,
     };
-    let findings = pipeline::collect(project, &run, &run.shapes(project), &selected, &opts);
+    let findings = collect(project, &run, &run.shapes(project), &selected, &opts);
     let keyless: Vec<Keyless<'_>> = findings
         .root_causes
         .iter()

@@ -1,8 +1,7 @@
 //! Benchmarks against a synthetic project. The developer-experience targets are
 //! enforced separately by tests/speed.rs, which CI runs in release mode.
 
-use cardinal_cli::config::Config;
-use cardinal_cli::engine::Engine;
+use cardinal_engine::{Config, Engine};
 use cardinal_synth::{SynthSpec, edit_model, generate};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::collections::BTreeSet;

@@ -1,11 +1,9 @@
 use super::report::{coverage, pct, unlock_hint};
 use super::{init_threads, load, plural};
 use crate::cli::Format;
-use crate::engine::Engine;
-use crate::pipeline::{self, Options};
-use crate::selection::closure;
 use cardinal_dbt::RelationId;
 use cardinal_diag::Severity;
+use cardinal_engine::{Engine, Findings, Options, closure, collect};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -36,7 +34,7 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
         layers: &BTreeSet::new(),
         no_sql: false,
     };
-    let findings = pipeline::collect(&project, &run, &run.shapes(&project), &selected, &opts);
+    let findings = collect(&project, &run, &run.shapes(&project), &selected, &opts);
     let cov = coverage(&project, &run, &selected);
     let planned = selected
         .iter()
@@ -112,7 +110,7 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
     0
 }
 
-fn root_causes(findings: &crate::pipeline::Findings, display: &dyn Fn(&RelationId) -> String) {
+fn root_causes(findings: &Findings, display: &dyn Fn(&RelationId) -> String) {
     println!();
     println!("To check the rest, fix these, most models first:");
     let rows: Vec<(String, String, usize)> = findings

@@ -1,10 +1,9 @@
 //! Coverage, counts and hints that several commands print.
 
 use super::plural;
-use crate::engine::RunResult;
-use crate::pipeline::{Findings, RootCause};
 use cardinal_dbt::{Hypothesis, Project, RelationId};
 use cardinal_diag::{Code, Diagnostic, Layer};
+use cardinal_engine::{Findings, RootCause, RunResult};
 use cardinal_grain::UnknownReason;
 use std::collections::{BTreeMap, BTreeSet};
 

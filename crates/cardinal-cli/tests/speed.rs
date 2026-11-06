@@ -2,8 +2,7 @@
 //! release builds, so they are ignored by default; CI runs them with
 //! `cargo test --release -p cardinal-cli --test speed -- --ignored`.
 
-use cardinal_cli::config::Config;
-use cardinal_cli::engine::Engine;
+use cardinal_engine::{Config, Engine};
 use cardinal_synth::{SynthSpec, edit_model, generate};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -52,11 +51,9 @@ fn speed_targets() {
 #[test]
 #[ignore]
 fn state_with_and_without_shapes() {
-    use cardinal_cli::pipeline::{self, Options};
-    use cardinal_cli::selection::closure;
-    use cardinal_cli::state::compare;
     use cardinal_diag::Severity;
     use cardinal_diag::baseline::Baseline;
+    use cardinal_engine::{Options, closure, collect, compare};
 
     let dir = std::env::temp_dir().join(format!("cardinal-speed-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -85,7 +82,7 @@ fn state_with_and_without_shapes() {
     let base_selected: BTreeSet<_> = base.models().map(|r| r.id.clone()).collect();
     let base_run = Engine::new(&base, &config, false).run(&closure(&base, &base_selected));
     let mut shapes = base_run.shapes(&base);
-    let findings = pipeline::collect(
+    let findings = collect(
         &base,
         &base_run,
         &shapes,

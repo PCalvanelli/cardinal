@@ -1,7 +1,6 @@
 use super::{EXIT_TOOL, eprint_error, load};
-use crate::engine::Engine;
-use crate::selection::closure;
 use cardinal_dbt::{Assumption, Kind, Project, RelationId};
+use cardinal_engine::{Engine, closure};
 use cardinal_grain::{ColSet, EvidenceArena, GrainStatus, Half, Site};
 use std::collections::BTreeSet;
 use std::path::PathBuf;

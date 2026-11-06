@@ -1,16 +1,15 @@
 use super::report::{count_by_code, count_by_layer, coverage, pct, unlock_hint};
 use super::{EXIT_TOOL, color, eprint_error, init_threads, load, plural, source_files};
 use crate::cli::{CheckArgs, Format};
-use crate::config::Config;
-use crate::engine::{Engine, RunResult};
-use crate::pipeline::{self, Findings, Options};
-use crate::selection::{closure, selection};
-use crate::state::{self, Comparison};
+use crate::state;
 use cardinal_check::SHAPES_FILE;
 use cardinal_dbt::{Project, RelationId};
 use cardinal_diag::baseline::Baseline;
 use cardinal_diag::render::{self, Style};
 use cardinal_diag::{ALL_LAYERS, Code, Layer, Severity};
+use cardinal_engine::{
+    Comparison, Config, Engine, Findings, Options, RunResult, closure, collect, selection,
+};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -150,7 +149,7 @@ pub fn run_loaded(project: &Project, config: &Config, args: &CheckArgs) -> u8 {
         layers: &layers,
         no_sql,
     };
-    let findings = pipeline::collect(project, &run, &shapes, &selected, &opts);
+    let findings = collect(project, &run, &shapes, &selected, &opts);
 
     // Shapes of a full analysis in every layer, for later --state runs to compare with.
     if layers.is_empty() {

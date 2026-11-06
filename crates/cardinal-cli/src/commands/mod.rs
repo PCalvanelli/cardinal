@@ -8,8 +8,8 @@ pub mod init;
 pub mod report;
 pub mod watch;
 
-use crate::config::Config;
 use cardinal_dbt::{Project, find_project_root, load_project};
+use cardinal_engine::Config;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;

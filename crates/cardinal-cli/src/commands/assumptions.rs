@@ -3,8 +3,8 @@
 
 use super::{EXIT_TOOL, eprint_error, load, plural};
 use crate::cli::Format;
-use crate::engine::{Engine, RunResult};
 use cardinal_dbt::{Assumption, Kind, Project, Relation, RelationId, Status};
+use cardinal_engine::{Engine, RunResult};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;

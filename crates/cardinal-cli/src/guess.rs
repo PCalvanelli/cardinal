@@ -15,8 +15,8 @@
 //! so they are never guessed as its key.
 
 use crate::commands::assumptions::ref_call;
-use crate::engine::RunResult;
 use cardinal_dbt::{GuessLog, Hypothesis, Kind, Project, Relation, RelationId};
+use cardinal_engine::RunResult;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Tables to guess keys for, at most.
