@@ -5,6 +5,7 @@ pub mod describe;
 pub mod explain;
 pub mod guess;
 pub mod init;
+pub mod report;
 pub mod watch;
 
 use crate::config::Config;
@@ -110,4 +111,12 @@ pub fn source_files(project: &Project) -> HashMap<String, String> {
 
 pub fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
+}
+
+pub fn init_threads(jobs: Option<usize>) {
+    if let Some(n) = jobs {
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(n.max(1))
+            .build_global();
+    }
 }

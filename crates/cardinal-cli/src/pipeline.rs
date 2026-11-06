@@ -261,23 +261,3 @@ fn without_blocked(raw: &mut Vec<Diagnostic>) {
         d.code.is_tool_error() || failed.get(&d.relation).is_none_or(|l| d.code.layer() <= *l)
     });
 }
-
-/// Counts per code, grouped by layer.
-pub fn count_by_layer(findings: &[Diagnostic]) -> BTreeMap<Layer, BTreeMap<Code, usize>> {
-    let mut m: BTreeMap<Layer, BTreeMap<Code, usize>> = BTreeMap::new();
-    for d in findings {
-        *m.entry(d.code.layer())
-            .or_default()
-            .entry(d.code)
-            .or_default() += 1;
-    }
-    m
-}
-
-pub fn count_by_code(findings: &[Diagnostic]) -> BTreeMap<Code, usize> {
-    let mut m = BTreeMap::new();
-    for d in findings {
-        *m.entry(d.code).or_default() += 1;
-    }
-    m
-}

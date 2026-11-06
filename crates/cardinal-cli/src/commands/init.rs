@@ -2,11 +2,12 @@
 //! cardinal.toml with the detected dialect and a stub for each unknown function,
 //! records today's findings as the baseline, and ignores the cache in git.
 
-use super::check::{coverage, pct, unlock_hint};
+use super::report::{count_by_code, coverage, pct, unlock_hint};
 use super::{EXIT_TOOL, color, plural, root};
 use crate::config::{Config, NewStub, stub_blocks, template};
 use crate::engine::{Engine, RunResult};
 use crate::pipeline::{self, Findings, Options};
+use crate::selection::closure;
 use cardinal_dbt::profile::profile_adapter;
 use cardinal_dbt::{Kind, LoadError, LoadWarning, Project, RelationId, supported_adapters};
 use cardinal_diag::baseline::Baseline;
@@ -356,7 +357,7 @@ struct Analysis {
 /// planning finds no new one; then collect the findings.
 fn analyze(project: &Project, config: &mut Config) -> Analysis {
     let selected: BTreeSet<RelationId> = project.checked().map(|r| r.id.clone()).collect();
-    let needed = super::check::closure(project, &selected);
+    let needed = closure(project, &selected);
     let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut run = Engine::new(project, config, true).run(&needed);
     for _ in 0..MAX_STUB_ROUNDS {
@@ -541,7 +542,7 @@ fn print_summary(p: &Project, a: &Analysis) {
             .iter()
             .filter(|d| d.severity == Severity::Error)
             .count();
-        let codes: Vec<String> = pipeline::count_by_code(reported)
+        let codes: Vec<String> = count_by_code(reported)
             .iter()
             .map(|(c, n)| format!("{c} ×{n}"))
             .collect();

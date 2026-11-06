@@ -7,6 +7,7 @@ pub mod config;
 pub mod engine;
 pub mod guess;
 pub mod pipeline;
+pub mod selection;
 pub mod state;
 
 pub use cli::{CheckArgs, Format};

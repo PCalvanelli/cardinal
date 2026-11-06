@@ -52,8 +52,8 @@ fn speed_targets() {
 #[test]
 #[ignore]
 fn state_with_and_without_shapes() {
-    use cardinal_cli::commands::check::closure;
     use cardinal_cli::pipeline::{self, Options};
+    use cardinal_cli::selection::closure;
     use cardinal_cli::state::compare;
     use cardinal_diag::Severity;
     use cardinal_diag::baseline::Baseline;

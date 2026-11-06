@@ -1,8 +1,9 @@
-use super::check::{closure, coverage, init_threads};
-use super::{load, plural};
+use super::report::{coverage, pct, unlock_hint};
+use super::{init_threads, load, plural};
 use crate::cli::Format;
 use crate::engine::Engine;
 use crate::pipeline::{self, Options};
+use crate::selection::closure;
 use cardinal_dbt::RelationId;
 use cardinal_diag::Severity;
 use serde_json::json;
@@ -73,7 +74,6 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
         return 0;
     }
-    let pct = |a: usize, b: usize| if b == 0 { 100 } else { (a * 100 + b / 2) / b };
     println!(
         "{} of {} have a known key ({}%); Cardinal could read the SQL of {} ({}%).",
         cov.known,
@@ -105,7 +105,7 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
             }
         }
     }
-    if let Some(h) = super::check::unlock_hint(&project, &findings, false) {
+    if let Some(h) = unlock_hint(&project, &findings, false) {
         println!();
         println!("Next: {h}");
     }

@@ -2,11 +2,10 @@
 //! already downloads for dbt's `state:modified`. Every guarantee the base proves becomes
 //! a check on the head (P003), and findings the base already has are not new.
 
-use crate::cli::CheckArgs;
-use crate::commands::check::closure;
 use crate::config::{Config, Severities};
 use crate::engine::{Engine, ProjectLocator, RunResult};
 use crate::pipeline::{self, Options};
+use crate::selection::closure;
 use cardinal_check::{Lost, SHAPES_FILE, Shapes, Side, compare_guarantees, lost_guarantees};
 use cardinal_dbt::{Kind, Project, RelationId, load_state};
 use cardinal_diag::baseline::Baseline;
@@ -76,11 +75,6 @@ fn state_from_env(dir: &Path, root: &Path) -> Option<PathBuf> {
         );
     }
     found
-}
-
-/// The state directory `check` would use, for `args`.
-pub fn state_for(args: &CheckArgs, root: &Path) -> Option<PathBuf> {
-    state_dir(args.state.as_deref(), root)
 }
 
 /// The shapes file in the state directory, when it was written from exactly these
