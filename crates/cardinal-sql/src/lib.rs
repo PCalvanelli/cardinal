@@ -2,6 +2,7 @@
 //! resolved against upstream schemas, without running DataFusion's optimizer.
 
 pub mod dialect;
+pub mod lex;
 pub mod plan;
 pub mod provider;
 pub mod span;
@@ -12,6 +13,7 @@ pub use datafusion_common;
 pub use datafusion_expr;
 pub use datafusion_sql::sqlparser;
 
+pub use lex::Tokens;
 pub use plan::{PlanFailure, PlanFailureKind, plan_sql};
 pub use provider::{CardinalContext, CardinalTable};
 pub use span::{LineCol, SourceText, SqlSpan};

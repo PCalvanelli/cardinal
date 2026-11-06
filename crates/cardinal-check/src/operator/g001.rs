@@ -5,70 +5,15 @@
 //! D ∪ G not a superkey of I. Rows sharing D then repeat c within a group, and the
 //! aggregate overcounts.
 
-use crate::sites::{Site, aggregate_sites, col_positions};
+use crate::sites::{AggClass, FanOut, Site, aggregate_sites};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity, normalize_text};
-use cardinal_grain::{AnalyzedModel, ColSet, RelationFacts};
+use cardinal_grain::{AnalyzedModel, ColSet, col_index};
 use cardinal_sql::datafusion_common::DFSchema;
-use cardinal_sql::datafusion_expr::{Expr, LogicalPlan};
-use cardinal_sql::provider::{FunctionOrigin, Functions};
+use cardinal_sql::datafusion_expr::LogicalPlan;
 use cardinal_sql::{SourceText, SqlSpan};
 
 pub struct FanOutAggregation;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AggClass {
-    /// Duplicate rows cannot change the result.
-    Idempotent,
-    /// Duplicate rows change the result.
-    NonIdempotent,
-    /// Not known either way: treated as non-idempotent at warning severity.
-    Unknown,
-}
-
-const NON_IDEMPOTENT: &[&str] = &[
-    "sum",
-    "avg",
-    "mean",
-    "count",
-    "var",
-    "var_samp",
-    "var_pop",
-    "variance",
-    "variance_samp",
-    "variance_pop",
-    "stddev",
-    "stddev_samp",
-    "stddev_pop",
-    "string_agg",
-    "array_agg",
-    "listagg",
-];
-const IDEMPOTENT: &[&str] = &["min", "max", "any_value", "bool_and", "bool_or"];
-
-pub fn classify(name: &str, distinct: bool, functions: &Functions) -> AggClass {
-    let n = name.to_ascii_lowercase();
-    if distinct && n == "count" {
-        return AggClass::Idempotent;
-    }
-    if IDEMPOTENT.contains(&n.as_str()) {
-        return AggClass::Idempotent;
-    }
-    if NON_IDEMPOTENT.contains(&n.as_str()) {
-        return AggClass::NonIdempotent;
-    }
-    match functions.aggregate_stubs.get(&n) {
-        Some((_, true)) => AggClass::Idempotent,
-        Some((FunctionOrigin::AdapterStub | FunctionOrigin::ConfigStub, false)) => {
-            AggClass::NonIdempotent
-        }
-        _ => AggClass::Unknown,
-    }
-}
-
-fn is_count_star(name: &str, args: &[Expr]) -> bool {
-    name == "count" && args.iter().all(|a| a.column_refs().is_empty())
-}
 
 impl Check for FanOutAggregation {
     fn code(&self) -> Code {
@@ -76,11 +21,10 @@ impl Check for FanOutAggregation {
     }
 
     fn run(&self, cx: &CheckContext<'_>, model: &AnalyzedModel, out: &mut Vec<Diagnostic>) {
-        let sites = aggregate_sites(&model.plan);
         let text = model.text();
-        for site in sites {
-            if let Some(d) = check_site(cx, model, &text, &site) {
-                out.push(d);
+        for site in aggregate_sites(&model.plan) {
+            if let Some(f) = site.fan_out(cx, model) {
+                out.push(build(cx, model, &text, &site, &f));
             }
         }
     }
@@ -92,74 +36,21 @@ fn names(schema: &DFSchema, cols: &ColSet) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn check_site(
-    cx: &CheckContext<'_>,
-    model: &AnalyzedModel,
-    text: &SourceText<'_>,
-    site: &Site<'_>,
-) -> Option<Diagnostic> {
-    if is_count_star(&site.name, site.args) {
-        return None;
-    }
-    let class = classify(&site.name, site.distinct, cx.functions);
-    if class == AggClass::Idempotent {
-        return None;
-    }
-    let input: &RelationFacts = model.facts(site.input)?;
-    // Precision over recall: only judge inputs whose grain is fully known.
-    if !input.status.is_known() || input.keys.is_empty() {
-        return None;
-    }
-    let schema = site.input.schema();
-    let args = col_positions(schema, site.args)?;
-    if args.is_empty() {
-        return None;
-    }
-    let dets: Vec<(usize, Vec<ColSet>)> =
-        args.iter().map(|c| (*c, input.determinants(*c))).collect();
-    for (c, cdets) in &dets {
-        // Other argument columns count with everything that determines them, which can
-        // only make a superkey more likely: sum(qty * unit_price) is judged at line grain.
-        let mut others = ColSet::new();
-        for (o, odets) in &dets {
-            if o != c {
-                others.insert(*o);
-                for d in odets {
-                    others.extend(d.iter().copied());
-                }
-            }
-        }
-        for d in cdets {
-            let mut x: ColSet = d.union(&site.group).copied().collect();
-            x.extend(others.iter().copied());
-            if input.is_superkey(&x) {
-                continue;
-            }
-            return Some(build(cx, model, text, site, input, schema, *c, d, class));
-        }
-    }
-    None
-}
-
-#[allow(clippy::too_many_arguments)]
 fn build(
     cx: &CheckContext<'_>,
     model: &AnalyzedModel,
     text: &SourceText<'_>,
     site: &Site<'_>,
-    input: &RelationFacts,
-    schema: &DFSchema,
-    c: usize,
-    d: &ColSet,
-    class: AggClass,
+    f: &FanOut<'_>,
 ) -> Diagnostic {
+    let (input, schema, c, d, class) = (f.input, site.input.schema(), f.col, &f.det, f.class);
     let col = schema.field(c).name().clone();
     let det = tuple(&names(schema, d));
     let col_span: Option<SqlSpan> = site
         .args
         .iter()
         .flat_map(|a| a.column_refs())
-        .filter(|r| schema.maybe_index_of_column(r) == Some(c))
+        .filter(|r| col_index(schema, r) == Some(c))
         .find_map(|r| r.spans().first())
         .and_then(|s| SqlSpan::from_df(&s));
     let call = col_span

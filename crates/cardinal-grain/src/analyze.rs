@@ -1,7 +1,9 @@
 //! Grain inference: facts computed bottom-up over a model's logical plan, one rule per
 //! plan node, on the plan exactly as SqlToRel produced it.
 
+use crate::aggregates::{aggregate, is_distinct_count};
 use crate::evidence::{Evidence, EvidenceArena, EvidenceId};
+use crate::expr::{col_index, expr_cols, summed_col, unalias};
 use crate::facts::{
     Cardinality, ColSet, Computed, Deleted, DistinctSite, Fd, FlagDrop, GrainStatus, Ind, JoinSite,
     Key, LossSite, MAX_KEYS, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, Unit,
@@ -11,7 +13,7 @@ use crate::summary::RelationSummary;
 use cardinal_dbt::RelationId;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use cardinal_sql::datafusion_common::{Column, DFSchema, NullEquality, ScalarValue};
-use cardinal_sql::datafusion_expr::expr::{Alias, WindowFunction};
+use cardinal_sql::datafusion_expr::expr::WindowFunction;
 use cardinal_sql::datafusion_expr::logical_plan::{
     Aggregate, Distinct, DistinctOn, Filter, Join, JoinType, Projection, TableScan, Union, Window,
 };
@@ -19,7 +21,7 @@ use cardinal_sql::datafusion_expr::utils::split_conjunction;
 use cardinal_sql::datafusion_expr::{
     BinaryExpr, Expr, LogicalPlan, Operator, WindowFunctionDefinition,
 };
-use cardinal_sql::{CardinalTable, SourceText, SqlSpan};
+use cardinal_sql::{CardinalTable, SourceText, SqlSpan, Tokens};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -158,94 +160,6 @@ pub(crate) enum Out {
     Lit { non_null: bool },
     Expr { cols: ColSet, non_null: bool },
     Opaque { non_null: bool },
-}
-
-pub(crate) fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(Alias { expr, .. }) => unalias(expr),
-        other => other,
-    }
-}
-
-pub(crate) fn col_index(schema: &DFSchema, c: &Column) -> Option<usize> {
-    schema.maybe_index_of_column(c).or_else(|| {
-        if c.relation.is_some() {
-            return None;
-        }
-        // Unqualified reference that is unique by name.
-        let hits: Vec<usize> = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.name() == &c.name)
-            .map(|(i, _)| i)
-            .collect();
-        (hits.len() == 1).then(|| hits[0])
-    })
-}
-
-/// Input positions of every column an expression reads; None if one cannot be resolved.
-pub(crate) fn expr_cols(e: &Expr, schema: &DFSchema) -> Option<ColSet> {
-    e.column_refs()
-        .into_iter()
-        .map(|c| col_index(schema, c))
-        .collect()
-}
-
-/// Aggregates that count distinct values: summing their results across groups can count
-/// a value once per group.
-pub const DISTINCT_COUNTS: &[&str] = &["approx_distinct", "approx_count_distinct", "hll"];
-
-pub fn is_distinct_count(name: &str, distinct: bool) -> bool {
-    let n = name.to_ascii_lowercase();
-    (n == "count" && distinct) || DISTINCT_COUNTS.contains(&n.as_str())
-}
-
-/// Aggregates whose result counts or adds up rows: dividing two of these makes a ratio.
-/// min, max and the like pick one value, so `sum(a) / max(rate)` is a conversion.
-fn is_counting(name: &str) -> bool {
-    matches!(
-        name,
-        "sum" | "count" | "avg" | "mean" | "approx_distinct" | "approx_count_distinct" | "hll"
-    )
-}
-
-/// Aggregates whose result can't be added up across groups.
-fn computed_kind(name: &str) -> Option<Computed> {
-    match name {
-        "avg" | "mean" => Some(Computed::Average),
-        "median"
-        | "approx_median"
-        | "percentile_cont"
-        | "percentile_disc"
-        | "approx_percentile_cont"
-        | "approx_percentile_cont_with_weight"
-        | "quantile"
-        | "quantile_cont"
-        | "quantile_disc" => Some(Computed::Percentile),
-        _ => None,
-    }
-}
-
-/// The column an aggregate argument adds up: `v`, `cast(v as …)` or
-/// `coalesce(v, <literal>)`. Anything else (`v * rate`, `case when v > 100 then 1 end`)
-/// is a different value.
-pub fn summed_col(e: &Expr, schema: &DFSchema) -> Option<usize> {
-    match unalias(e) {
-        Expr::Column(c) => col_index(schema, c),
-        Expr::Cast(c) => summed_col(&c.expr, schema),
-        Expr::TryCast(c) => summed_col(&c.expr, schema),
-        Expr::ScalarFunction(f)
-            if matches!(
-                f.func.name().to_ascii_lowercase().as_str(),
-                "coalesce" | "ifnull" | "nvl"
-            ) && f.args.len() == 2
-                && matches!(unalias(&f.args[1]), Expr::Literal(..)) =>
-        {
-            summed_col(&f.args[0], schema)
-        }
-        _ => None,
-    }
 }
 
 /// A division whose numerator and denominator both read aggregated columns:
@@ -953,52 +867,24 @@ impl Analyzer<'_> {
 
     /// Where output column `name` is computed (`<expr> as name`), for labels on a column
     /// the plan rewrote, such as a ratio of two aggregates: the expression before `as` on
-    /// that line, or the whole line when the expression ends on an earlier one. Skips
-    /// `--` comments, and allows any whitespace and quotes around the alias.
+    /// that line, or the whole line when the expression ends on an earlier one. Comments
+    /// and strings do not count, and the alias may be quoted.
     fn alias_line(&self, name: &str) -> Option<SqlSpan> {
         let text = SourceText::new(self.sql);
-        let lower = self.sql.to_ascii_lowercase();
-        let name = name.to_ascii_lowercase();
-        let ident = |c: char| c.is_alphanumeric() || c == '_';
-        let bytes = lower.as_bytes();
-        let mut from = 0;
-        while let Some(i) = lower[from..].find("as") {
-            let at = from + i;
-            from = at + 2;
-            if lower[..at].chars().next_back().is_some_and(ident) {
-                continue;
-            }
-            let mut k = at + 2;
-            if !bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
-                continue;
-            }
-            while bytes.get(k).is_some_and(u8::is_ascii_whitespace) {
-                k += 1;
-            }
-            let quote = matches!(bytes.get(k), Some(b'"' | b'`'));
-            if quote {
-                k += 1;
-            }
-            if !lower[k..].starts_with(&name) {
-                continue;
-            }
-            let end = k + name.len();
-            if !quote && lower[end..].chars().next().is_some_and(ident) {
-                continue;
-            }
-            let line_start = lower[..at].rfind('\n').map_or(0, |n| n + 1);
-            if lower[line_start..at].contains("--") {
-                continue;
-            }
-            let (line, _) = self.line_of(Some(text.span(at, end)))?;
-            let expr_start = text.offset(line.start);
-            let expr = self.sql[expr_start.min(at)..at].trim_end();
-            if expr.is_empty() {
-                return Some(line);
-            }
-            return Some(text.span(expr_start, expr_start + expr.len()));
+        let t = Tokens::new(self.sql);
+        let alias = |i: usize| t.name(i).is_some_and(|n| n.eq_ignore_ascii_case(name));
+        let (kw, alias) = t
+            .words("as")
+            .find_map(|i| t.next(i).filter(|&n| alias(n)).map(|n| (i, n)))?;
+        let at = t.get(kw).start;
+        let end = t.name_range(alias)?.end;
+        let (line, _) = self.line_of(Some(text.span(at, end)))?;
+        let expr_start = text.offset(line.start);
+        let expr = self.sql[expr_start.min(at)..at].trim_end();
+        if expr.is_empty() {
+            return Some(line);
         }
-        None
+        Some(text.span(expr_start, expr_start + expr.len()))
     }
 
     fn filter(&mut self, f: &Filter) -> RelationFacts {
@@ -1289,13 +1175,13 @@ impl Analyzer<'_> {
             return;
         };
         let name = u.name().to_ascii_lowercase();
-        if is_counting(&name) {
+        if aggregate(&name).is_some_and(|a| a.counting) {
             f.aggregated.insert(out);
         }
         let span = self.call_span(&name, wf.params.args.iter());
         let frame = &wf.params.window_frame;
         let whole = frame.start_bound.is_unbounded() && frame.end_bound.is_unbounded();
-        let (kind, what, over) = if let Some(what) = computed_kind(&name) {
+        let (kind, what, over) = if let Some(what) = aggregate(&name).and_then(|a| a.computed) {
             (
                 MeasureKind::NonAdditive {
                     agree_on: ColSet::new(),
@@ -1303,7 +1189,7 @@ impl Analyzer<'_> {
                 what,
                 vec![],
             )
-        } else if matches!(name.as_str(), "sum" | "count")
+        } else if aggregate(&name).is_some_and(|a| a.totals)
             && !wf.params.order_by.is_empty()
             && !whole
         {
@@ -1387,10 +1273,10 @@ impl Analyzer<'_> {
             };
             let out = g + j;
             let name = af.func.name().to_ascii_lowercase();
-            if is_counting(&name) {
+            if aggregate(&name).is_some_and(|a| a.counting) {
                 f.aggregated.insert(out);
             }
-            if let Some(what) = computed_kind(&name) {
+            if let Some(what) = aggregate(&name).and_then(|a| a.computed) {
                 let order = af.params.order_by.iter().map(|o| &o.expr);
                 let span = self.call_span(&name, af.params.args.iter().chain(order));
                 f.measures.push(Measure {
@@ -1406,9 +1292,7 @@ impl Analyzer<'_> {
                     }),
                 });
             }
-            if !matches!(name.as_str(), "sum" | "avg" | "mean" | "min" | "max")
-                || af.params.args.len() != 1
-            {
+            if !aggregate(&name).is_some_and(|a| a.keeps_unit) || af.params.args.len() != 1 {
                 continue;
             }
             let Some(c) = summed_col(&af.params.args[0], schema) else {
@@ -2392,25 +2276,21 @@ impl Analyzer<'_> {
     }
 
     /// Fallback when no join key carries a span (USING joins): the first unused JOIN
-    /// clause in the text that names the right side.
+    /// clause in the text that names the right side on its line.
     fn find_join_span(&self, text: &SourceText<'_>, right: &LogicalPlan) -> Option<SqlSpan> {
         let names = side_aliases(right);
-        let lower = text.text.to_ascii_lowercase();
-        let mut from = 0;
-        while let Some(i) = lower[from..].find("join") {
-            let at = from + i;
-            from = at + 4;
-            let line_end = lower[at..]
+        let t = Tokens::new(text.text);
+        for join in t.words("join") {
+            let at = t.get(join).end;
+            let line_end = text.text[at..]
                 .find('\n')
-                .map(|n| at + n)
-                .unwrap_or(lower.len());
-            let clause = &lower[at..line_end];
-            if names.iter().any(|n| {
-                clause
-                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .any(|w| w == n)
-            }) {
-                let s = text.join_clause_before(text.span(at + 4, at + 4))?;
+                .map_or(text.text.len(), |n| at + n);
+            let names_right = (join + 1..t.len())
+                .take_while(|&k| t.get(k).start < line_end)
+                .filter_map(|k| t.name(k))
+                .any(|w| names.iter().any(|n| w.eq_ignore_ascii_case(n)));
+            if names_right {
+                let s = text.join_clause_before(text.span(at, at))?;
                 if !self.used_join_spans.contains(&s) {
                     return Some(s);
                 }

@@ -7,11 +7,11 @@
 //! a model stops carrying it with no filter, join condition or aggregate on the way that
 //! read it: after that, nothing downstream can tell deleted rows apart.
 
-use crate::{Check, CheckContext, word_offsets};
+use crate::{Check, CheckContext};
 use cardinal_dbt::RelationId;
 use cardinal_diag::{Code, Diagnostic, Fix, normalize_text};
 use cardinal_grain::AnalyzedModel;
-use cardinal_sql::SqlSpan;
+use cardinal_sql::{SqlSpan, Tokens};
 
 pub struct SoftDeleteDropped;
 
@@ -78,10 +78,10 @@ impl Check for SoftDeleteDropped {
 }
 
 /// Where the SQL reads relation `display` (`shop.orders`, `stg_orders`): the first
-/// occurrence of its name.
+/// occurrence of its name, quoted or not.
 fn reference_span(model: &AnalyzedModel, display: &str) -> Option<SqlSpan> {
     let name = display.rsplit('.').next()?;
-    let at = *word_offsets(&model.sql, name).first()?;
-    let text = model.text();
-    Some(text.span(at, at + name.len()))
+    let t = Tokens::new(&model.sql);
+    let at = t.name_range(t.names(name).next()?)?;
+    Some(model.text().span(at.start, at.end))
 }

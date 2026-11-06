@@ -17,13 +17,12 @@
 //! G counts only plain column references. `group by date_trunc('month', day)` puts many
 //! days in one group, so it must not count as `group by day`.
 
-use crate::operator::g001::check_site;
-use crate::sites::{Site, aggregate_sites, bare_group, unalias};
+use crate::sites::{Site, bare_group, sites_without_fan_out};
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Severity, normalize_text};
 use cardinal_grain::{
     AnalyzedModel, Computed, DistinctSite, Measure, MeasureKind, MeasureSite, RelationFacts,
-    summed_col,
+    aggregate, col_index, summed_col, unalias,
 };
 use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_expr::Expr;
@@ -38,7 +37,7 @@ impl Check for NonAdditiveSum {
 
     fn run(&self, cx: &CheckContext<'_>, model: &AnalyzedModel, out: &mut Vec<Diagnostic>) {
         let text = model.text();
-        for site in aggregate_sites(&model.plan) {
+        for site in sites_without_fan_out(cx, model) {
             if let Some(d) = check(cx, model, &text, &site) {
                 out.push(d);
             }
@@ -53,7 +52,7 @@ fn check(
     site: &Site<'_>,
 ) -> Option<Diagnostic> {
     let name = site.name.to_ascii_lowercase();
-    let avg = matches!(name.as_str(), "avg" | "mean");
+    let avg = aggregate(&name).is_some_and(|a| a.computed == Some(Computed::Average));
     if !(name == "sum" || avg) || site.distinct || site.args.len() != 1 {
         return None;
     }
@@ -88,10 +87,6 @@ fn check(
             }
         }
     }
-    // A join that repeats the values is the bigger problem, and G001 reports it.
-    if check_site(cx, model, text, site).is_some() {
-        return None;
-    }
     let call = Call::new(text, site, schema, c);
     Some(match fact.distinct() {
         Some(d) => build_distinct(cx, model, text, site, schema, &call, d),
@@ -112,7 +107,7 @@ impl Call {
         let col_span: Option<SqlSpan> = site.args[0]
             .column_refs()
             .into_iter()
-            .filter(|r| schema.maybe_index_of_column(r) == Some(c))
+            .filter(|r| col_index(schema, r) == Some(c))
             .find_map(|r| r.spans().first())
             .and_then(|s| SqlSpan::from_df(&s));
         let span = col_span
@@ -146,7 +141,7 @@ fn group_text(text: &SourceText<'_>, schema: &DFSchema, exprs: &[Expr]) -> Optio
             Expr::ScalarFunction(f) => e
                 .column_refs()
                 .into_iter()
-                .filter(|r| schema.maybe_index_of_column(r).is_some())
+                .filter(|r| col_index(schema, r).is_some())
                 .find_map(|r| r.spans().first())
                 .and_then(|s| SqlSpan::from_df(&s))
                 .and_then(|s| text.enclosing_call(s, f.func.name()))

@@ -8,15 +8,16 @@
 //! preserved side, and the count counts every row: `count(*)`, `count(1)`, or a column
 //! of the preserved side. `count(o.order_id)` skips the nulls and is correct.
 
-use crate::{Check, CheckContext, word_offsets};
+use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
-use cardinal_grain::AnalyzedModel;
+use cardinal_grain::{AnalyzedModel, col_index, unalias};
 use cardinal_sql::datafusion_common::tree_node::TreeNodeRecursion;
 use cardinal_sql::datafusion_expr::expr::AggregateFunction;
 use cardinal_sql::datafusion_expr::logical_plan::{Aggregate, Filter, Join, JoinType};
 use cardinal_sql::datafusion_expr::utils::split_conjunction;
 use cardinal_sql::datafusion_expr::{BinaryExpr, Expr, LogicalPlan, Operator};
-use cardinal_sql::{SourceText, SqlSpan};
+use cardinal_sql::lex::Kind;
+use cardinal_sql::{SourceText, SqlSpan, Tokens};
 
 pub struct CountOuterJoin;
 
@@ -33,13 +34,6 @@ impl Check for CountOuterJoin {
             }
             Ok(TreeNodeRecursion::Continue)
         });
-    }
-}
-
-fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(a) => unalias(&a.expr),
-        o => o,
     }
 }
 
@@ -65,7 +59,7 @@ fn trace(plan: &LogicalPlan, idx: usize, join: &Join) -> Option<usize> {
     match plan {
         LogicalPlan::Join(j) if std::ptr::eq(j, join) => Some(idx),
         LogicalPlan::Projection(p) => match unalias(p.expr.get(idx)?) {
-            Expr::Column(c) => trace(&p.input, p.input.schema().maybe_index_of_column(c)?, join),
+            Expr::Column(c) => trace(&p.input, col_index(p.input.schema(), c)?, join),
             _ => None,
         },
         LogicalPlan::SubqueryAlias(s) => trace(&s.input, idx, join),
@@ -81,7 +75,7 @@ fn side_of(plan: &LogicalPlan, e: &Expr, join: &Join) -> Option<Option<bool>> {
     let lw = join.left.schema().fields().len();
     let mut side = None;
     for c in e.column_refs() {
-        let i = plan.schema().maybe_index_of_column(c)?;
+        let i = col_index(plan.schema(), c)?;
         let right = trace(plan, i, join)? >= lw;
         if side.is_some_and(|s| s != right) {
             return None;
@@ -122,7 +116,7 @@ fn check_aggregate(
     // A WHERE on the filled side drops the unmatched rows already (G011's to report).
     for f in &filters {
         for c in f.predicate.column_refs() {
-            let Some(i) = f.input.schema().maybe_index_of_column(c) else {
+            let Some(i) = col_index(f.input.schema(), c) else {
                 return;
             };
             match trace(&f.input, i, j) {
@@ -154,7 +148,7 @@ fn check_aggregate(
         let arg = unalias(&params.args[0]);
         let (span, written) = match arg {
             Expr::Literal(v, _) if !v.is_null() => {
-                let span = literal_count_span(&model.sql, &text, used);
+                let span = literal_count_span(&text, used);
                 (span, span.map(|s| text.slice(s).to_string()))
             }
             Expr::Column(c) if side_of(&a.input, arg, j) == Some(Some(!filled_right)) => {
@@ -216,9 +210,7 @@ fn check_aggregate(
 fn filled_column(j: &Join, filled_right: bool) -> Option<String> {
     let filled = if filled_right { &j.right } else { &j.left };
     let on_filled = |e: &Expr| match unalias(e) {
-        Expr::Column(c) if filled.schema().maybe_index_of_column(c).is_some() => {
-            Some(c.flat_name())
-        }
+        Expr::Column(c) if col_index(filled.schema(), c).is_some() => Some(c.flat_name()),
         _ => None,
     };
     let pairs = j.on.iter().map(|(l, r)| (l, r));
@@ -240,25 +232,28 @@ fn filled_column(j: &Join, filled_right: bool) -> Option<String> {
 }
 
 /// The next `count(*)` or `count(<number>)` in the SQL not yet used by another finding.
-fn literal_count_span(sql: &str, text: &SourceText<'_>, used: &mut Vec<usize>) -> Option<SqlSpan> {
-    for at in word_offsets(sql, "count") {
+fn literal_count_span(text: &SourceText<'_>, used: &mut Vec<usize>) -> Option<SqlSpan> {
+    let t = Tokens::new(text.text);
+    for i in t.words("count") {
+        let at = t.get(i).start;
         if used.contains(&at) {
             continue;
         }
-        let rest = &sql[at + 5..];
-        let open = rest.len() - rest.trim_start().len();
-        let rest = rest.trim_start();
-        let Some(inner) = rest.strip_prefix('(') else {
+        let Some(arg) = t
+            .next(i)
+            .filter(|&o| t.is_punct(o, '('))
+            .and_then(|o| t.next(o))
+        else {
             continue;
         };
-        let Some(close) = inner.find(')') else {
+        let literal = t.is_punct(arg, '*')
+            || (t.get(arg).kind == Kind::Number && t.text(arg).bytes().all(|b| b.is_ascii_digit()));
+        let Some(close) = t.next(arg).filter(|&c| t.is_punct(c, ')')) else {
             continue;
         };
-        let arg = inner[..close].trim();
-        if arg == "*" || (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit())) {
+        if literal {
             used.push(at);
-            let end = at + 5 + open + 1 + close + 1;
-            return Some(text.span(at, end));
+            return Some(text.span(at, t.get(close).end));
         }
     }
     None

@@ -141,30 +141,6 @@ pub(crate) fn decl_label(rel: &Relation, message: String) -> Label {
 /// an older check set are not reused.
 pub const CHECKS_FINGERPRINT: &str = "G001-G014+P003";
 
-/// Byte offsets of `word` in `sql` as a whole word, ignoring case, outside `--` comments.
-pub(crate) fn word_offsets(sql: &str, word: &str) -> Vec<usize> {
-    let lower = sql.to_ascii_lowercase();
-    let word = word.to_ascii_lowercase();
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(i) = lower[from..].find(&word) {
-        let at = from + i;
-        from = at + word.len();
-        if lower[..at].chars().next_back().is_some_and(ident)
-            || lower[from..].chars().next().is_some_and(ident)
-        {
-            continue;
-        }
-        let line_start = lower[..at].rfind('\n').map_or(0, |n| n + 1);
-        if lower[line_start..at].contains("--") {
-            continue;
-        }
-        out.push(at);
-    }
-    out
-}
-
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))
 }

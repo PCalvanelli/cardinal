@@ -9,10 +9,9 @@
 
 use crate::{Check, CheckContext, tuple};
 use cardinal_diag::{Code, Diagnostic, Fix, Severity, normalize_text};
-use cardinal_grain::AnalyzedModel;
+use cardinal_grain::{AnalyzedModel, unalias};
 use cardinal_sql::SqlSpan;
 use cardinal_sql::datafusion_common::tree_node::TreeNodeRecursion;
-use cardinal_sql::datafusion_expr::expr::Alias;
 use cardinal_sql::datafusion_expr::{Expr, LogicalPlan};
 
 pub struct SetOpByPosition;
@@ -117,13 +116,6 @@ fn column_span(branch: &LogicalPlan, j: usize) -> Option<SqlSpan> {
         LogicalPlan::SubqueryAlias(s) => column_span(&s.input, j),
         LogicalPlan::Distinct(d) => column_span(d.input(), j),
         _ => None,
-    }
-}
-
-fn unalias(e: &Expr) -> &Expr {
-    match e {
-        Expr::Alias(Alias { expr, .. }) => unalias(expr),
-        other => other,
     }
 }
 

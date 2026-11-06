@@ -16,6 +16,7 @@
 
 use crate::engine::RunResult;
 use cardinal_dbt::{Guess, GuessLog, Hypothesis, Kind, Project, Relation, RelationId};
+use cardinal_sql::Tokens;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Tables to guess keys for, at most.
@@ -178,117 +179,49 @@ pub struct DedupPartition {
     pub qualifier: Option<String>,
 }
 
-fn ident_char(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
-}
-
-/// Index just past the `)` that closes the `(` at `open`, skipping quoted text.
-fn close_paren(b: &[u8], open: usize) -> Option<usize> {
-    let mut depth = 0usize;
+/// The code tokens strictly between `open` and the `)` at `close`, with their depth inside
+/// that pair of parentheses (a `(` has the depth outside it).
+fn inside(t: &Tokens<'_>, open: usize, close: usize) -> Vec<(usize, i32)> {
+    let mut depth = 0;
+    let mut out = Vec::new();
     let mut i = open;
-    while i < b.len() {
-        match b[i] {
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1;
-                }
-            }
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            _ => {}
+    while let Some(k) = t.next(i).filter(|&k| k < close) {
+        if t.is_punct(k, ')') {
+            depth -= 1;
         }
-        i += 1;
-    }
-    None
-}
-
-fn skip_ws(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && b[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
-/// Whether `word` (lowercase) starts at `i` as a whole word.
-fn word_at(b: &[u8], i: usize, word: &str) -> bool {
-    b[i..].starts_with(word.as_bytes())
-        && (i == 0 || !ident_char(b[i - 1]))
-        && b.get(i + word.len()).is_none_or(|c| !ident_char(*c))
-}
-
-/// Positions in `b` at parenthesis depth 0 where `first` then `second` start, as words.
-fn find_words_at_top(b: &[u8], first: &str, second: &str) -> Option<(usize, usize)> {
-    let mut depth = 0i32;
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1;
-                }
-            }
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            _ if depth == 0 && word_at(b, i, first) => {
-                let j = skip_ws(b, i + first.len());
-                if j > i + first.len() && word_at(b, j, second) {
-                    return Some((i, j + second.len()));
-                }
-            }
-            _ => {}
+        out.push((k, depth));
+        if t.is_punct(k, '(') {
+            depth += 1;
         }
-        i += 1;
+        i = k;
     }
-    None
-}
-
-/// Split at commas at parenthesis depth 0.
-fn split_top(s: &str) -> Vec<&str> {
-    let b = s.as_bytes();
-    let (mut depth, mut start, mut out) = (0i32, 0, Vec::new());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1;
-                }
-            }
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            b',' if depth == 0 => {
-                out.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    out.push(&s[start..]);
     out
 }
 
+/// Where `first` then `second` start, as words at depth 0 of `toks`.
+fn words_at_top(t: &Tokens<'_>, toks: &[(usize, i32)], first: &str, second: &str) -> Option<usize> {
+    toks.windows(2).position(|w| {
+        w[0].1 == 0 && w[1].1 == 0 && t.is_word(w[0].0, first) && t.is_word(w[1].0, second)
+    })
+}
+
 /// A plain column reference, `col` or `q.col` (parts may be quoted): (qualifier, column).
-fn column_ref(item: &str) -> Option<(Option<String>, String)> {
-    let parts: Vec<String> = item
-        .trim()
-        .split('.')
-        .map(|p| p.trim().trim_matches(|c| c == '"' || c == '`').to_string())
-        .collect();
-    if parts.iter().any(|p| !plain(p)) {
+fn column_ref(t: &Tokens<'_>, item: &[(usize, i32)]) -> Option<(Option<String>, String)> {
+    if item.len().is_multiple_of(2) {
         return None;
     }
-    let col = parts.last()?.clone();
-    let q = (parts.len() > 1).then(|| parts[parts.len() - 2].clone());
-    Some((q, col))
+    let mut parts = Vec::new();
+    for (n, &(i, _)) in item.iter().enumerate() {
+        if n % 2 == 1 {
+            if !t.is_punct(i, '.') {
+                return None;
+            }
+        } else {
+            parts.push(t.name(i).filter(|p| plain(p))?.to_string());
+        }
+    }
+    let col = parts.pop()?;
+    Some((parts.pop(), col))
 }
 
 /// The `partition by` of each `row_number() over (...)` in `sql`. Only plain column
@@ -296,47 +229,29 @@ fn column_ref(item: &str) -> Option<(Option<String>, String)> {
 /// qualifiers, is left out, as is a `row_number()` without `partition by`.
 pub fn dedup_partitions(sql: &str) -> Vec<DedupPartition> {
     let lower = sql.to_lowercase();
-    let b = lower.as_bytes();
+    let t = Tokens::new(&lower);
+    let punct = |i: Option<usize>, c| i.filter(|&k| t.is_punct(k, c));
     let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(i) = lower[from..].find("row_number") {
-        let at = from + i;
-        from = at + "row_number".len();
-        if at > 0 && ident_char(b[at - 1]) {
-            continue;
-        }
+    for i in t.words("row_number") {
         // row_number ( ) over (
-        let mut j = skip_ws(b, from);
-        if b.get(j) != Some(&b'(') {
-            continue;
-        }
-        j = skip_ws(b, j + 1);
-        if b.get(j) != Some(&b')') {
-            continue;
-        }
-        j = skip_ws(b, j + 1);
-        if !word_at(b, j, "over") {
-            continue;
-        }
-        let open = skip_ws(b, j + 4);
-        if b.get(open) != Some(&b'(') {
-            continue;
-        }
-        let Some(close) = close_paren(b, open) else {
+        let over = punct(punct(t.next(i), '(').and_then(|k| t.next(k)), ')')
+            .and_then(|k| t.next(k))
+            .filter(|&k| t.is_word(k, "over"));
+        let Some(open) = punct(over.and_then(|k| t.next(k)), '(') else {
             continue;
         };
-        let body = &lower[open + 1..close - 1];
-        let bb = body.as_bytes();
-        let Some((_, p_end)) = find_words_at_top(bb, "partition", "by") else {
+        let Some(close) = t.closing(open) else {
             continue;
         };
-        let rest = &body[p_end..];
-        let end = find_words_at_top(rest.as_bytes(), "order", "by")
-            .map(|(s, _)| s)
-            .unwrap_or(rest.len());
-        let Some(refs) = split_top(&rest[..end])
-            .into_iter()
-            .map(column_ref)
+        let body = inside(&t, open, close);
+        let Some(p) = words_at_top(&t, &body, "partition", "by") else {
+            continue;
+        };
+        let rest = &body[p + 2..];
+        let rest = &rest[..words_at_top(&t, rest, "order", "by").unwrap_or(rest.len())];
+        let Some(refs) = rest
+            .split(|&(k, d)| d == 0 && t.is_punct(k, ','))
+            .map(|item| column_ref(&t, item))
             .collect::<Option<Vec<_>>>()
         else {
             continue;
@@ -386,47 +301,25 @@ const NOT_ALIAS: &[&str] = &[
 
 /// Whether `sql` (lowercase) reads the table named `table` under the name `alias`: as
 /// `table`, `"table"`, `... table alias` or `... table as alias`.
-fn reads_as(sql: &str, table: &str, alias: &str) -> bool {
+fn reads_as(sql: &Tokens<'_>, table: &str, alias: &str) -> bool {
     if table.is_empty() {
         return false;
     }
     if table == alias {
         return true;
     }
-    let b = sql.as_bytes();
-    let mut from = 0;
-    while let Some(i) = sql[from..].find(table) {
-        let at = from + i;
-        from = at + table.len();
-        if at > 0 && ident_char(b[at - 1]) {
-            continue;
-        }
-        let mut j = at + table.len();
-        if matches!(b.get(j), Some(b'"' | b'`')) {
-            j += 1;
-        }
-        if b.get(j).is_some_and(|c| ident_char(*c)) {
-            continue;
-        }
-        let mut k = skip_ws(b, j);
-        if k == j {
-            continue;
-        }
-        if word_at(b, k, "as") {
-            k = skip_ws(b, k + 2);
-        }
-        let q = matches!(b.get(k), Some(b'"' | b'`'));
-        let s = if q { k + 1 } else { k };
-        let mut e = s;
-        while e < b.len() && ident_char(b[e]) {
-            e += 1;
-        }
-        let name = &sql[s..e];
-        if name == alias && !NOT_ALIAS.contains(&name) {
-            return true;
-        }
-    }
-    false
+    let t = sql;
+    (0..t.len())
+        .filter(|&i| t.name(i) == Some(table))
+        .filter_map(|i| t.next(i))
+        .filter_map(|n| {
+            if t.is_word(n, "as") {
+                t.next(n)
+            } else {
+                Some(n)
+            }
+        })
+        .any(|n| t.name(n) == Some(alias) && !NOT_ALIAS.contains(&alias))
 }
 
 /// The tables among `tables` that `model_sql` deduplicates on `p`: the one its
@@ -444,6 +337,7 @@ fn dedup_tables<'a>(
     let with_cols: Vec<&Relation> = tables.iter().copied().filter(|r| has_cols(r)).collect();
     if let Some(q) = &p.qualifier {
         let lower = model_sql.to_lowercase();
+        let sql = Tokens::new(&lower);
         let named: Vec<&Relation> = tables
             .iter()
             .copied()
@@ -453,7 +347,7 @@ fn dedup_tables<'a>(
                     .last()
                     .cloned()
                     .unwrap_or_else(|| table_name(r).to_lowercase());
-                reads_as(&lower, &ident, q)
+                reads_as(&sql, &ident, q)
             })
             .collect();
         if named.len() == 1 {
@@ -807,6 +701,21 @@ mod tests {
         // Nor are columns of different tables.
         let sql =
             "select row_number() over (partition by x.a, y.b order by ts) from x join y on 1=1";
+        assert!(dedup_partitions(sql).is_empty());
+    }
+
+    #[test]
+    fn dedup_reads_sql_not_comments_or_strings() {
+        // A row_number in a string or a comment is not one.
+        let sql = "select 'row_number() over (partition by a)' as s \
+                   -- row_number() over (partition by b)\nfrom t";
+        assert!(dedup_partitions(sql).is_empty());
+        // Comments inside the window do not hide its columns, nor does a `)` in a string.
+        let sql = "select row_number() over (partition by /* key */ id, kind -- why\n \
+                   order by coalesce(x, ')')) from t";
+        assert_eq!(dedup_partitions(sql), vec![part(&["id", "kind"], None)]);
+        // A constant is not a column.
+        let sql = "select row_number() over (partition by 1 order by ts) from t";
         assert!(dedup_partitions(sql).is_empty());
     }
 

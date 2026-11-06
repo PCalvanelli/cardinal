@@ -1,15 +1,18 @@
 //! Grain analysis: which column sets are keys, which functional dependencies hold,
 //! which columns are provably non-null, and why, for every node of a model's plan.
 
+pub mod aggregates;
 pub mod analyze;
 pub mod evidence;
+pub mod expr;
 pub mod facts;
 pub mod summary;
 pub mod verdict;
 
-pub use analyze::summed_col;
+pub use aggregates::{Aggregate, aggregate};
 pub use analyze::{AnalyzedModel, JoinRecord, JoinSide, UpstreamFacts, analyze, node_id};
 pub use evidence::{Evidence, EvidenceArena, EvidenceId};
+pub use expr::{col_index, expr_cols, exprs_cols, summed_col, unalias};
 pub use facts::{
     Cardinality, ColSet, Computed, Deleted, DistinctSite, Fd, FlagDrop, GrainStatus, Ind, JoinSite,
     Key, LossSite, Measure, MeasureKind, MeasureSite, RelationFacts, RowLoss, SOFT_DELETE_FLAGS,
