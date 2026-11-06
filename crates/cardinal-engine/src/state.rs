@@ -37,97 +37,105 @@ fn saved_shapes(
     Ok(shapes)
 }
 
-/// Analyze the base artifacts in `dir` and compare the selected models with their base
-/// versions.
-pub(crate) fn compare(
-    head: &Analysis<'_>,
-    config: &Config,
-    severities: &Severities,
-    dir: &Path,
-    use_cache: bool,
-) -> Result<Comparison, String> {
-    let (head_run, selected) = (&head.run, &head.selected);
-    let head = head.project;
-    let base = load_state(&head.root, &head.root.join(dir)).map_err(|e| e.to_string())?;
-    // Shown relative to the project root or the working directory, when under one.
-    let cwd = std::env::current_dir().ok();
-    let shown = dir
-        .strip_prefix(&head.root)
-        .ok()
-        .or_else(|| cwd.as_deref().and_then(|c| dir.strip_prefix(c).ok()))
-        .unwrap_or(dir);
-    let base_selected: BTreeSet<RelationId> = selected
-        .iter()
-        .filter(|id| base.get(id).is_some_and(|r| r.is_model()))
-        .cloned()
-        .collect();
-    // Main's shapes, from the file its own `cardinal check` wrote when it fits these
-    // artifacts, or else by analyzing them.
-    let (base_shapes, on_main, source) =
-        match saved_shapes(&head.root.join(dir), &base, &base_selected) {
-            Ok(s) => {
-                let on_main = s.findings.clone();
-                (
-                    s,
-                    on_main,
-                    BaseShapes::Saved(head.root.join(dir).join(SHAPES_FILE)),
-                )
-            }
-            Err(why) => {
-                let a =
-                    Analysis::for_state(&base, config, base_selected.clone(), use_cache, head_run);
-                let shapes = a.shapes();
-                let base_findings = a.findings(&shapes, &Options::all_findings(severities));
-                (
-                    shapes,
-                    Baseline::from_findings(&base_findings.all),
-                    BaseShapes::Analyzed(why),
-                )
-            }
-        };
+impl Analysis<'_> {
+    /// Compare the selected models with their versions in the base branch's artifacts in
+    /// `dir`, analyzing those artifacts unless the shapes file the base's own check wrote
+    /// fits them.
+    pub fn compare(
+        &self,
+        config: &Config,
+        severities: &Severities,
+        dir: &Path,
+        use_cache: bool,
+    ) -> Result<Comparison, String> {
+        let (head_run, selected) = (&self.run, &self.selected);
+        let head = self.project;
+        let base = load_state(&head.root, &head.root.join(dir)).map_err(|e| e.to_string())?;
+        // Shown relative to the project root or the working directory, when under one.
+        let cwd = std::env::current_dir().ok();
+        let shown = dir
+            .strip_prefix(&head.root)
+            .ok()
+            .or_else(|| cwd.as_deref().and_then(|c| dir.strip_prefix(c).ok()))
+            .unwrap_or(dir);
+        let base_selected: BTreeSet<RelationId> = selected
+            .iter()
+            .filter(|id| base.get(id).is_some_and(|r| r.is_model()))
+            .cloned()
+            .collect();
+        // Main's shapes, from the file its own `cardinal check` wrote when it fits these
+        // artifacts, or else by analyzing them.
+        let (base_shapes, on_main, source) =
+            match saved_shapes(&head.root.join(dir), &base, &base_selected) {
+                Ok(s) => {
+                    let on_main = s.findings.clone();
+                    (
+                        s,
+                        on_main,
+                        BaseShapes::Saved(head.root.join(dir).join(SHAPES_FILE)),
+                    )
+                }
+                Err(why) => {
+                    let a = Analysis::for_state(
+                        &base,
+                        config,
+                        base_selected.clone(),
+                        use_cache,
+                        head_run,
+                    );
+                    let shapes = a.shapes();
+                    let base_findings = a.findings(&shapes, &Options::all_findings(severities));
+                    (
+                        shapes,
+                        Baseline::from_findings(&base_findings.all),
+                        BaseShapes::Analyzed(why),
+                    )
+                }
+            };
 
-    let mut lost: BTreeMap<RelationId, Vec<Lost>> = BTreeMap::new();
-    let (mut gained, mut kept, mut skipped) = (0, 0, 0);
-    for id in &base_selected {
-        let sql_model = base
-            .get(id)
-            .is_some_and(|r| matches!(r.kind, Kind::Model { .. } | Kind::Ephemeral));
-        if sql_model && base.get(id).is_some_and(|r| r.compiled_sql.is_none()) {
-            skipped += 1;
-            continue;
+        let mut lost: BTreeMap<RelationId, Vec<Lost>> = BTreeMap::new();
+        let (mut gained, mut kept, mut skipped) = (0, 0, 0);
+        for id in &base_selected {
+            let sql_model = base
+                .get(id)
+                .is_some_and(|r| matches!(r.kind, Kind::Model { .. } | Kind::Ephemeral));
+            if sql_model && base.get(id).is_some_and(|r| r.compiled_sql.is_none()) {
+                skipped += 1;
+                continue;
+            }
+            let (Some(b), Some(h)) = (base_shapes.get(id), head_run.results.get(id)) else {
+                continue;
+            };
+            // A model that does not plan has an E-code instead.
+            if !b.planned || !h.planned {
+                continue;
+            }
+            let change = compare_guarantees(
+                Side {
+                    summary: &b.summary,
+                    verdicts: &b.verdicts,
+                },
+                Side {
+                    summary: &h.summary,
+                    verdicts: &h.verdicts,
+                },
+            );
+            gained += change.gained;
+            kept += change.kept;
+            if !change.lost.is_empty() {
+                lost.insert(id.clone(), change.lost);
+            }
         }
-        let (Some(b), Some(h)) = (base_shapes.get(id), head_run.results.get(id)) else {
-            continue;
-        };
-        // A model that does not plan has an E-code instead.
-        if !b.planned || !h.planned {
-            continue;
-        }
-        let change = compare_guarantees(
-            Side {
-                summary: &b.summary,
-                verdicts: &b.verdicts,
-            },
-            Side {
-                summary: &h.summary,
-                verdicts: &h.verdicts,
-            },
-        );
-        gained += change.gained;
-        kept += change.kept;
-        if !change.lost.is_empty() {
-            lost.insert(id.clone(), change.lost);
-        }
+        let findings = lost_guarantees(&base, head, &lost, &ProjectLocator { project: head });
+        Ok(Comparison {
+            dir: shown.display().to_string(),
+            findings,
+            on_main,
+            lost: lost.values().map(Vec::len).sum(),
+            gained,
+            kept,
+            skipped,
+            base: source,
+        })
     }
-    let findings = lost_guarantees(&base, head, &lost, &ProjectLocator { project: head });
-    Ok(Comparison {
-        dir: shown.display().to_string(),
-        findings,
-        on_main,
-        lost: lost.values().map(Vec::len).sum(),
-        gained,
-        kept,
-        skipped,
-        base: source,
-    })
 }

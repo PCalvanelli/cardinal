@@ -1,15 +1,14 @@
 //! One analysis of a project: the selected models, analyzed with everything upstream of
-//! them, and the findings, shapes and comparison drawn from it.
+//! them, and the findings and shapes drawn from it. `Analysis::compare`, the comparison
+//! with the base branch, is in `state`.
 
-use crate::comparison::Comparison;
-use crate::config::{Config, Severities};
+use crate::config::Config;
 use crate::engine::{Engine, RunResult};
 use crate::pipeline::{Findings, Options, collect};
 use crate::selection::closure;
 use cardinal_check::Shapes;
 use cardinal_dbt::{Project, RelationId};
 use std::collections::BTreeSet;
-use std::path::Path;
 
 /// The selected models of a project, analyzed with everything upstream of them.
 pub struct Analysis<'p> {
@@ -70,17 +69,5 @@ impl<'p> Analysis<'p> {
     /// The findings for the selected models.
     pub fn findings(&self, shapes: &Shapes, opts: &Options<'_>) -> Findings {
         collect(self.project, &self.run, shapes, &self.selected, opts)
-    }
-
-    /// Compare the selected models with their versions in the base branch's artifacts
-    /// in `dir`.
-    pub fn compare(
-        &self,
-        config: &Config,
-        severities: &Severities,
-        dir: &Path,
-        use_cache: bool,
-    ) -> Result<Comparison, String> {
-        crate::state::compare(self, config, severities, dir, use_cache)
     }
 }
