@@ -4,7 +4,7 @@
 //! SQL was analyzed is G002's: it compares the key with the model's actual output.
 
 use crate::{ProjectCheck, ProjectContext, decl_label, declared_relations, tuple};
-use cardinal_dbt::project::ColumnsFrom;
+use cardinal_dbt::ColumnsFrom;
 use cardinal_dbt::{DeclOrigin, DeclProblemKind, Relation};
 use cardinal_diag::{Code, Diagnostic, Fix, normalize_text};
 

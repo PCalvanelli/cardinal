@@ -5,8 +5,8 @@ use crate::analyze::{AnalyzedModel, UpstreamFacts, analyze};
 use crate::facts::GrainStatus;
 use crate::summary::{RelationSummary, SummaryColumn, SummaryKey};
 use cardinal_dbt::{DeclOrigin, RelationId};
-use cardinal_sql::provider::{Functions, TableLookup};
 use cardinal_sql::{CardinalContext, CardinalTable, plan_sql};
+use cardinal_sql::{Functions, TableLookup};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -220,7 +220,7 @@ pub fn test_relation(id: &RelationId, name: &str) -> cardinal_dbt::Relation {
         relation_parts: vec![name.into()],
         depends_on: vec![],
         columns: vec![],
-        columns_from: cardinal_dbt::project::ColumnsFrom::Missing,
+        columns_from: cardinal_dbt::ColumnsFrom::Missing,
         declared_keys: vec![],
         not_null: Default::default(),
         references: vec![],
@@ -249,7 +249,7 @@ pub fn analyze_sql(tables: &Tables, sql: &str) -> AnalyzedModel {
 
 /// Analyze `sql` as model `name` (`model.test.<name>`).
 pub fn analyze_model(tables: &Tables, name: &str, sql: &str) -> AnalyzedModel {
-    let (d, _) = cardinal_sql::dialect::dialect_for_adapter("duckdb");
+    let (d, _) = cardinal_sql::dialect_for_adapter("duckdb");
     let ctx = CardinalContext {
         functions: functions(),
         tables,

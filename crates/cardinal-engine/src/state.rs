@@ -9,7 +9,7 @@ use crate::engine::ProjectLocator;
 use crate::pipeline::Options;
 use cardinal_check::{Lost, SHAPES_FILE, Shapes, Side, compare_guarantees, lost_guarantees};
 use cardinal_dbt::{Kind, Project, RelationId, load_state};
-use cardinal_diag::baseline::Baseline;
+use cardinal_diag::Baseline;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

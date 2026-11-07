@@ -51,7 +51,7 @@ fn speed_targets() {
 #[test]
 #[ignore]
 fn state_with_and_without_shapes() {
-    use cardinal_diag::baseline::Baseline;
+    use cardinal_diag::Baseline;
     use cardinal_engine::{Analysis, Options};
 
     let dir = std::env::temp_dir().join(format!("cardinal-speed-state-{}", std::process::id()));

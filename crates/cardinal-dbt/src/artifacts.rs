@@ -53,8 +53,6 @@ pub struct NodeConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
-    pub tags: Option<Value>,
-    #[serde(default)]
     pub contract: Option<Value>,
     /// Tests: a `where` filter limits the rows the test checks.
     #[serde(default, rename = "where")]
@@ -91,8 +89,6 @@ pub struct TestMetadata {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub namespace: Option<String>,
-    #[serde(default)]
     pub kwargs: BTreeMap<String, Value>,
 }
 
@@ -112,8 +108,6 @@ pub struct ManifestNode {
     #[serde(default)]
     pub patch_path: Option<String>,
     #[serde(default)]
-    pub path: String,
-    #[serde(default)]
     pub language: Option<String>,
     #[serde(default, alias = "compiled_sql")]
     pub compiled_code: Option<String>,
@@ -121,8 +115,6 @@ pub struct ManifestNode {
     pub raw_code: Option<String>,
     #[serde(default)]
     pub relation_name: Option<String>,
-    #[serde(default)]
-    pub alias: Option<String>,
     #[serde(default)]
     pub depends_on: DependsOn,
     #[serde(default)]
@@ -146,8 +138,6 @@ pub struct ManifestNode {
 #[derive(Debug, Deserialize, Default)]
 pub struct ManifestSource {
     #[serde(default)]
-    pub unique_id: String,
-    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub source_name: String,
@@ -157,8 +147,6 @@ pub struct ManifestSource {
     pub original_file_path: String,
     #[serde(default)]
     pub relation_name: Option<String>,
-    #[serde(default)]
-    pub identifier: Option<String>,
     #[serde(default)]
     pub meta: Option<Value>,
     #[serde(default)]

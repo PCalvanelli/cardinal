@@ -13,7 +13,7 @@
 mod graph;
 mod node;
 mod operator;
-pub mod shapes;
+mod shapes;
 mod sites;
 mod tool;
 
@@ -42,8 +42,8 @@ pub use tool::{plan_failure, unknown_function};
 use cardinal_dbt::{Project, Relation, RelationId};
 use cardinal_diag::{Code, Diagnostic, Label};
 use cardinal_grain::{AnalyzedModel, DeclaredCheck};
+use cardinal_sql::Functions;
 use cardinal_sql::SqlSpan;
-use cardinal_sql::provider::Functions;
 use std::collections::BTreeSet;
 
 /// Turns positions in a relation's compiled SQL into labels in the user's own files.

@@ -5,9 +5,9 @@
 use super::report::{count_by_code, coverage, pct, unlock_hint};
 use super::{EXIT_TOOL, color, plural, root};
 use crate::config::{NewStub, stub_blocks, template};
-use cardinal_dbt::profile::profile_adapter;
+use cardinal_dbt::profile_adapter;
 use cardinal_dbt::{Kind, LoadError, LoadWarning, Project, RelationId, supported_adapters};
-use cardinal_diag::baseline::Baseline;
+use cardinal_diag::Baseline;
 use cardinal_diag::{Code, Layer, Severity};
 use cardinal_engine::{Analysis, Config, Findings, Options};
 use cardinal_sql::StubSpec;
@@ -368,7 +368,7 @@ fn analyze<'p>(project: &'p Project, config: &mut Config) -> FirstRun<'p> {
                 let Some(f) = cardinal_check::unknown_function(d) else {
                     continue;
                 };
-                let display = project.get(id).map_or(id.0.clone(), |r| r.display.clone());
+                let display = project.display(id);
                 let models = found.entry(f.to_string()).or_insert_with(|| {
                     new = true;
                     BTreeSet::new()

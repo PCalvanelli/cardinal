@@ -63,12 +63,7 @@ pub fn run(dir: Option<PathBuf>, format: Format, emit_tests: bool) -> u8 {
     let engine = Engine::new(&project, &config, true);
     let run = engine.run(&needed);
     let entries = ledger(&project, &run);
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|r| r.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
     if emit_tests {
         print!("{}", emit(&project, &entries));
         return 0;
@@ -198,12 +193,7 @@ pub fn emit(project: &Project, entries: &[Entry]) -> String {
     };
     let mut by_rel: BTreeMap<RelationId, Vec<TestYaml>> = BTreeMap::new();
     let mut skipped: Vec<String> = Vec::new();
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|r| r.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
     let mut fix_existing: Vec<String> = Vec::new();
     for e in entries.iter().filter(|e| !e.status.is_checked()) {
         let a = &e.assumption;

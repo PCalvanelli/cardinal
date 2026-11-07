@@ -7,7 +7,7 @@ use crate::engine::ProjectLocator;
 use crate::engine::RunResult;
 use cardinal_check::{ProjectContext, Shapes, project_checks, root_causes};
 use cardinal_dbt::{Project, RelationId};
-use cardinal_diag::baseline::Baseline;
+use cardinal_diag::Baseline;
 use cardinal_diag::suppress::{self, Suppression};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, Layer, Severity, normalize_text};
 use cardinal_grain::UnknownReason;

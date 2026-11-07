@@ -10,7 +10,6 @@ mod resolve;
 mod root;
 
 pub use load::{load_project, load_state};
-pub use resolve::split_relation_name;
 pub use root::{find_project_root, find_projects_below};
 pub(crate) use root::{profile_name, strip_yaml_comment};
 

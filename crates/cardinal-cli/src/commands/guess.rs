@@ -3,7 +3,7 @@
 
 use super::report::coverage;
 use super::{EXIT_TOOL, eprint_error, load, plural};
-use cardinal_dbt::guess::MARKER;
+use cardinal_dbt::GUESS_MARKER;
 use cardinal_dbt::{Guess, Hypothesis, Kind, Project, RelationId};
 use cardinal_engine::guess::{self, Keyless};
 use cardinal_engine::{Analysis, Config, Options};
@@ -44,12 +44,7 @@ pub fn run(dir: Option<PathBuf>) -> u8 {
 
 /// Write the guess tests and return the report.
 pub fn run_loaded(project: &Project, config: &Config) -> Result<String, String> {
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|r| r.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
     let selected: BTreeSet<RelationId> = project.models().map(|r| r.id.clone()).collect();
     let a = Analysis::new(project, config, selected, true);
     let (run, selected) = (&a.run, &a.selected);
@@ -199,12 +194,7 @@ fn checked_report(
     if log.guesses.is_empty() {
         return Ok(String::new());
     }
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|r| r.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
     let mut out = format!(
         "dbt has checked {} of Cardinal's guesses:\n",
         log.guesses.len()
@@ -240,7 +230,7 @@ fn checked_report(
 /// Remove a file `cardinal guess` wrote; leave anything else alone.
 fn remove_generated(path: &Path) -> Result<bool, String> {
     match std::fs::read_to_string(path) {
-        Ok(s) if s.starts_with(MARKER) => std::fs::remove_file(path)
+        Ok(s) if s.starts_with(GUESS_MARKER) => std::fs::remove_file(path)
             .map(|_| true)
             .map_err(|e| format!("could not remove {}: {e}", path.display())),
         _ => Ok(false),

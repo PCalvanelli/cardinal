@@ -8,7 +8,7 @@ use crate::facts::{
 };
 use cardinal_dbt::{Assumption, DeclOrigin, DeclaredKey, Kind, MeasureDecl, Relation, RelationId};
 use cardinal_sql::datafusion_common::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use cardinal_sql::types::warehouse_type;
+use cardinal_sql::warehouse_type;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::str::FromStr;

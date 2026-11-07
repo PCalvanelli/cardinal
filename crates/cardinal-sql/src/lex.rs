@@ -16,7 +16,7 @@
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
+pub enum TokenKind {
     Word,
     /// A `"quoted"` or `` `quoted` `` name.
     Quoted,
@@ -30,7 +30,7 @@ pub enum Kind {
 /// A token: its kind and byte range in the text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Token {
-    pub kind: Kind,
+    pub kind: TokenKind,
     pub start: usize,
     pub end: usize,
 }
@@ -71,8 +71,8 @@ impl<'a> Tokens<'a> {
     pub fn name_range(&self, i: usize) -> Option<Range<usize>> {
         let t = self.list[i];
         match t.kind {
-            Kind::Word => Some(t.start..t.end),
-            Kind::Quoted => {
+            TokenKind::Word => Some(t.start..t.end),
+            TokenKind::Quoted => {
                 let q = self.sql.as_bytes()[t.start];
                 let closed = t.end - t.start >= 2 && self.sql.as_bytes()[t.end - 1] == q;
                 Some(t.start + 1..if closed { t.end - 1 } else { t.end })
@@ -88,11 +88,11 @@ impl<'a> Tokens<'a> {
 
     /// Whether token `i` is the word `word`, ignoring ASCII case.
     pub fn is_word(&self, i: usize, word: &str) -> bool {
-        self.list[i].kind == Kind::Word && self.text(i).eq_ignore_ascii_case(word)
+        self.list[i].kind == TokenKind::Word && self.text(i).eq_ignore_ascii_case(word)
     }
 
     pub fn is_punct(&self, i: usize, c: char) -> bool {
-        self.list[i].kind == Kind::Punct && self.text(i).starts_with(c)
+        self.list[i].kind == TokenKind::Punct && self.text(i).starts_with(c)
     }
 
     /// Every occurrence of the word `word`, ignoring ASCII case. Words in comments,
@@ -117,7 +117,7 @@ impl<'a> Tokens<'a> {
     }
 
     fn is_trivia(&self, i: usize) -> bool {
-        matches!(self.list[i].kind, Kind::Space | Kind::Comment)
+        matches!(self.list[i].kind, TokenKind::Space | TokenKind::Comment)
     }
 
     /// The `)` that closes the `(` at `open`.
@@ -171,35 +171,35 @@ fn lex(sql: &str) -> Vec<Token> {
         let kind = match c {
             '-' if b.get(i + 1) == Some(&b'-') => {
                 i = sql[i..].find('\n').map_or(sql.len(), |n| i + n);
-                Kind::Comment
+                TokenKind::Comment
             }
             '/' if b.get(i + 1) == Some(&b'*') => {
                 i = sql[i + 2..].find("*/").map_or(sql.len(), |n| i + 2 + n + 2);
-                Kind::Comment
+                TokenKind::Comment
             }
             '\'' => {
                 i = quoted_end(b, i);
-                Kind::String
+                TokenKind::String
             }
             '"' | '`' => {
                 i = quoted_end(b, i);
-                Kind::Quoted
+                TokenKind::Quoted
             }
             c if c.is_whitespace() => {
                 i = run(sql, i, char::is_whitespace);
-                Kind::Space
+                TokenKind::Space
             }
             c if c.is_alphabetic() || c == '_' => {
                 i = run(sql, i, word_char);
-                Kind::Word
+                TokenKind::Word
             }
             c if c.is_ascii_digit() => {
                 i = run(sql, i, |c| c.is_alphanumeric() || c == '_' || c == '.');
-                Kind::Number
+                TokenKind::Number
             }
             c => {
                 i += c.len_utf8();
-                Kind::Punct
+                TokenKind::Punct
             }
         };
         out.push(Token {
@@ -235,10 +235,10 @@ fn run(sql: &str, from: usize, keep: impl Fn(char) -> bool) -> usize {
 mod tests {
     use super::*;
 
-    fn kinds(sql: &str) -> Vec<(Kind, &str)> {
+    fn kinds(sql: &str) -> Vec<(TokenKind, &str)> {
         let t = Tokens::new(sql);
         (0..t.len())
-            .filter(|&i| t.get(i).kind != Kind::Space)
+            .filter(|&i| t.get(i).kind != TokenKind::Space)
             .map(|i| (t.get(i).kind, t.text(i)))
             .collect()
     }
@@ -249,7 +249,7 @@ mod tests {
         let t = Tokens::new(sql);
         let joined: std::string::String = (0..t.len()).map(|i| t.text(i)).collect();
         assert_eq!(joined, sql);
-        use Kind::*;
+        use TokenKind::*;
         assert_eq!(
             kinds(sql),
             vec![
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn unterminated_runs_to_the_end() {
-        use Kind::*;
+        use TokenKind::*;
         assert_eq!(kinds("a 'b c"), vec![(Word, "a"), (String, "'b c")]);
         assert_eq!(kinds("a /* b"), vec![(Word, "a"), (Comment, "/* b")]);
         assert_eq!(kinds("a \"b"), vec![(Word, "a"), (Quoted, "\"b")]);

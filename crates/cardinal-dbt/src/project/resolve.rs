@@ -7,7 +7,7 @@ use crate::names::RelationId;
 use std::collections::BTreeMap;
 
 /// Split a relation_name like `"db"."main"."orders"` or `` `p.d.t` `` into lowercased parts.
-pub fn split_relation_name(name: &str) -> Vec<String> {
+pub(super) fn split_relation_name(name: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut cur = String::new();
     let mut quote: Option<char> = None;

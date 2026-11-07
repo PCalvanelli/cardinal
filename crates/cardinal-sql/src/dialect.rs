@@ -16,13 +16,3 @@ pub fn dialect_for_adapter(adapter: &str) -> (Box<dyn Dialect + Send + Sync>, bo
         _ => (Box::new(GenericDialect {}), false),
     }
 }
-
-/// Adapters whose stub pack and dialect Cardinal knows.
-pub const KNOWN_ADAPTERS: &[&str] = &[
-    "snowflake",
-    "bigquery",
-    "postgres",
-    "redshift",
-    "databricks",
-    "duckdb",
-];
