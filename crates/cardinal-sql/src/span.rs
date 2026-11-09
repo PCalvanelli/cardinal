@@ -2,7 +2,7 @@
 //! column); everything else is located by expanding from those spans in the SQL text,
 //! read with the one lexer in `lex`.
 
-use crate::lex::{Kind, Tokens};
+use crate::lex::{TokenKind, Tokens};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -149,7 +149,7 @@ impl<'a> SourceText<'a> {
         };
         let start = t
             .prev(open)
-            .filter(|&w| t.get(w).kind == Kind::Word)
+            .filter(|&w| t.get(w).kind == TokenKind::Word)
             .unwrap_or(open);
         self.span(t.get(start).start, self.offset(span.end))
     }

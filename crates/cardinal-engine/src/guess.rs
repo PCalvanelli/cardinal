@@ -433,12 +433,7 @@ pub fn propose(
     keyless: &[Keyless<'_>],
     log: &GuessLog,
 ) -> (Vec<Guess>, Vec<RelationId>) {
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|r| r.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
     let failed = |h: &Hypothesis| log.get(h).is_some_and(|g| !g.passed);
     let tables: BTreeSet<RelationId> = keyless.iter().map(|k| k.relation.id.clone()).collect();
     let usage = usage(project, run, &tables);
@@ -583,7 +578,7 @@ mod tests {
                     data_type: None,
                 })
                 .collect(),
-            columns_from: cardinal_dbt::project::ColumnsFrom::Catalog,
+            columns_from: cardinal_dbt::ColumnsFrom::Catalog,
             declared_keys: vec![],
             not_null: Default::default(),
             references: vec![],

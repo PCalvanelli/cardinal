@@ -31,12 +31,7 @@ pub fn run(dir: Option<PathBuf>, format: Format) -> u8 {
         .iter()
         .filter(|id| run.results.get(*id).is_some_and(|r| r.planned))
         .count();
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|r| r.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
 
     if format != Format::Text {
         let v = json!({

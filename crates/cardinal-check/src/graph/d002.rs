@@ -78,7 +78,7 @@ fn finding(
     Diagnostic {
         code: Code::D002,
         severity,
-        relation: rel.id.0.clone(),
+        relation: rel.id.clone(),
         message,
         primary: decl_label(rel, label),
         secondary: vec![],

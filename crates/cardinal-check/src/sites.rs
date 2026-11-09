@@ -11,7 +11,7 @@ use cardinal_sql::datafusion_common::DFSchema;
 use cardinal_sql::datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
 use cardinal_sql::datafusion_expr::expr::AggregateFunction;
 use cardinal_sql::datafusion_expr::{Expr, LogicalPlan, WindowFunctionDefinition};
-use cardinal_sql::provider::{FunctionOrigin, Functions};
+use cardinal_sql::{FunctionOrigin, Functions};
 
 pub(crate) struct Site<'a> {
     pub name: String,

@@ -151,7 +151,7 @@ impl Hypothesis {
 // `Hypothesis::from_meta` to read back.
 
 /// First line of every file `cardinal guess` writes; marks it as safe to rewrite.
-pub const MARKER: &str = "-- Cardinal's guess:";
+pub const GUESS_MARKER: &str = "-- Cardinal's guess:";
 
 /// A guess `cardinal guess` writes as a dbt test.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,7 +175,7 @@ impl Guess {
         relation_sql: &dyn Fn(&RelationId) -> String,
     ) -> String {
         let h = &self.hypothesis;
-        let mut out = format!("{MARKER} {}.\n", h.describe(&display));
+        let mut out = format!("{GUESS_MARKER} {}.\n", h.describe(&display));
         for w in &self.why {
             out.push_str(&format!("-- Why: {w}.\n"));
         }

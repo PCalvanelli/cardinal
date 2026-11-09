@@ -3,6 +3,7 @@
 //! do not churn the file.
 
 use crate::{Code, Diagnostic};
+use cardinal_dbt::RelationId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -10,7 +11,7 @@ use std::path::Path;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BaselineEntry {
     pub code: Code,
-    pub model: String,
+    pub model: RelationId,
     pub fingerprint: String,
 }
 

@@ -57,7 +57,7 @@ pub fn run(code: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cardinal_diag::code::ALL_CODES;
+    use cardinal_diag::ALL_CODES;
 
     #[test]
     fn every_page_names_its_layer() {

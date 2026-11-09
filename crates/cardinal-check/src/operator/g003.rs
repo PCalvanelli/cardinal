@@ -28,7 +28,7 @@ impl Check for ManyToManyJoin {
             out.push(Diagnostic {
                 code: Code::G003,
                 severity: Code::G003.default_severity(),
-                relation: model.relation.0.clone(),
+                relation: model.relation.clone(),
                 message: Code::G003.title().into(),
                 primary: cx.locator.label(
                     &model.relation,

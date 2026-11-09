@@ -4,7 +4,7 @@ use crate::cli::{CheckArgs, Format};
 use crate::state;
 use cardinal_check::SHAPES_FILE;
 use cardinal_dbt::{Project, RelationId};
-use cardinal_diag::baseline::Baseline;
+use cardinal_diag::Baseline;
 use cardinal_diag::render::{self, Style};
 use cardinal_diag::{ALL_LAYERS, Code, Layer, Severity};
 use cardinal_engine::{Analysis, Comparison, Config, Findings, Options, RunResult, selection};

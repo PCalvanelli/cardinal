@@ -52,7 +52,7 @@ impl Check for SoftDeleteDropped {
             out.push(Diagnostic {
                 code: Code::G014,
                 severity: Code::G014.default_severity(),
-                relation: model.relation.0.clone(),
+                relation: model.relation.clone(),
                 message: format!(
                     "{} keeps rows deleted in {source}: `{flag}` is dropped without a filter",
                     cx.locator.display(&model.relation)

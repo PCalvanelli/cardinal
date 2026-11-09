@@ -80,23 +80,10 @@ pub fn unknown_grain(
         let Some(rel) = project.get(&root) else {
             continue;
         };
-        let names: Vec<String> = affected
-            .iter()
-            .map(|a| {
-                project
-                    .get(a)
-                    .map(|r| r.display.clone())
-                    .unwrap_or(a.0.clone())
-            })
-            .collect();
+        let names: Vec<String> = affected.iter().map(|a| project.display(a)).collect();
         let n = affected.len();
         let plural = if n == 1 { "model" } else { "models" };
-        let display = |r: &RelationId| {
-            project
-                .get(r)
-                .map(|x| x.display.clone())
-                .unwrap_or(r.0.clone())
-        };
+        let display = |r: &RelationId| project.display(r);
         let (message, help) = match &reason {
             UnknownReason::SourceWithoutKey(_) => {
                 let what = if rel.kind == Kind::Seed {
@@ -144,7 +131,7 @@ pub fn unknown_grain(
         let d = Diagnostic {
             code: Code::G004,
             severity: Code::G004.default_severity(),
-            relation: root.0.clone(),
+            relation: root.clone(),
             message,
             primary: Label {
                 file: rel.file.clone(),

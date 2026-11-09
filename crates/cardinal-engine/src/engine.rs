@@ -5,15 +5,15 @@ use crate::config::Config;
 use cardinal_cache::{Cache, KeyBuilder};
 use cardinal_check::{CheckContext, Locator, Shape, Shapes, model_checks, plan_failure};
 use cardinal_dbt::{Kind, Project, Relation, RelationId};
-use cardinal_diag::sourcemap::SourceMap;
+use cardinal_diag::SourceMap;
 use cardinal_diag::{Diagnostic, Label};
 use cardinal_grain::{
     AnalyzedModel, Cardinality, JoinSide, RelationSummary, UnknownReason, UpstreamFacts, Verdict,
     analyze, summarize, summary_from_declared, verdict,
 };
-use cardinal_sql::provider::{Functions, TableLookup};
 use cardinal_sql::sqlparser::dialect::Dialect;
 use cardinal_sql::{CardinalContext, CardinalTable, SqlSpan, plan_sql};
+use cardinal_sql::{Functions, TableLookup};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -128,10 +128,7 @@ impl Locator for ProjectLocator<'_> {
     }
 
     fn display(&self, relation: &RelationId) -> String {
-        self.project
-            .get(relation)
-            .map(|r| r.display.clone())
-            .unwrap_or_else(|| relation.0.clone())
+        self.project.display(relation)
     }
 }
 
@@ -141,7 +138,7 @@ impl<'a> Engine<'a> {
             .dialect
             .clone()
             .unwrap_or_else(|| project.adapter.clone());
-        let (dialect, _) = cardinal_sql::dialect::dialect_for_adapter(&adapter);
+        let (dialect, _) = cardinal_sql::dialect_for_adapter(&adapter);
         Engine {
             project,
             functions: Functions::new(&adapter, &config.stub),
@@ -431,5 +428,16 @@ impl RunResult {
             })
             .collect();
         shapes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `cardinal init` offers dbt's list; each must get its own dialect, not the generic one.
+    #[test]
+    fn every_supported_adapter_has_a_dialect() {
+        for a in cardinal_dbt::supported_adapters() {
+            assert!(cardinal_sql::dialect_for_adapter(a).1, "{a}");
+        }
     }
 }

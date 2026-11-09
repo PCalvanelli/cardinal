@@ -59,7 +59,7 @@ impl Check for IncrementalKeyNotUnique {
             out.push(Diagnostic {
                 code: Code::G006,
                 severity: Severity::Error,
-                relation: model.relation.0.clone(),
+                relation: model.relation.clone(),
                 message: format!("{kind} unique_key {key} names columns the SQL doesn't output"),
                 primary: cx
                     .locator
@@ -140,7 +140,7 @@ impl Check for IncrementalKeyNotUnique {
         out.push(Diagnostic {
             code: Code::G006,
             severity: Code::G006.default_severity(),
-            relation: model.relation.0.clone(),
+            relation: model.relation.clone(),
             message: format!(
                 "{kind} unique_key {key} isn't unique: the SQL can return several rows per {key}"
             ),

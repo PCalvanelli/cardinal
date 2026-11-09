@@ -48,12 +48,7 @@ pub fn unlock_hint(project: &Project, findings: &Findings, see_coverage: bool) -
     }
     let top: Vec<&RootCause> = sources.iter().take(3).copied().collect();
     let covered: BTreeSet<&RelationId> = top.iter().flat_map(|r| r.affected.iter()).collect();
-    let display = |id: &RelationId| {
-        project
-            .get(id)
-            .map(|x| x.display.clone())
-            .unwrap_or(id.0.clone())
-    };
+    let display = |id: &RelationId| project.display(id);
     let names: Vec<String> = top.iter().map(|r| display(&r.root)).collect();
     let n = top.len();
     let m = covered.len();

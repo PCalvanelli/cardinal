@@ -1,7 +1,7 @@
 //! What `--state` found: the result of comparing the head with the base branch.
 
+use cardinal_diag::Baseline;
 use cardinal_diag::Diagnostic;
-use cardinal_diag::baseline::Baseline;
 use std::path::PathBuf;
 
 pub struct Comparison {

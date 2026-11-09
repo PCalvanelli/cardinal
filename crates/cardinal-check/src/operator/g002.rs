@@ -54,7 +54,7 @@ impl Check for UnprovenDeclaredKey {
             out.push(Diagnostic {
                 code: Code::G002,
                 severity: Code::G002.default_severity(),
-                relation: model.relation.0.clone(),
+                relation: model.relation.clone(),
                 message,
                 primary: cx.locator.label(&model.relation, None, label),
                 secondary: vec![],

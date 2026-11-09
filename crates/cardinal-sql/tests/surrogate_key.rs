@@ -1,9 +1,9 @@
 //! dbt_utils.generate_surrogate_key compiles to an md5() call on every adapter.
 //! Each case is the SQL dbt emits for that adapter's hash/concat/type_string macros.
 
-use cardinal_sql::dialect::dialect_for_adapter;
-use cardinal_sql::plan::plan_sql;
-use cardinal_sql::provider::{CardinalContext, CardinalTable, Functions, TableLookup};
+use cardinal_sql::dialect_for_adapter;
+use cardinal_sql::plan_sql;
+use cardinal_sql::{CardinalContext, CardinalTable, Functions, TableLookup};
 use datafusion_common::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 

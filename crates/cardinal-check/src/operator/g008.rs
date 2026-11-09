@@ -197,7 +197,7 @@ fn build_distinct(
     Diagnostic {
         code: Code::G008,
         severity: Severity::Warning,
-        relation: model.relation.0.clone(),
+        relation: model.relation.clone(),
         message: Code::G008.title().into(),
         primary,
         secondary,
@@ -367,7 +367,7 @@ fn build(
     Diagnostic {
         code: Code::G008,
         severity: Severity::Warning,
-        relation: model.relation.0.clone(),
+        relation: model.relation.clone(),
         message: Code::G008.title().into(),
         primary: cx.locator.label(&model.relation, call.span, label.clone()),
         secondary: vec![origin],

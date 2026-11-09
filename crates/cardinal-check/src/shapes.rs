@@ -7,7 +7,7 @@
 //! shapes without analyzing main again.
 
 use cardinal_dbt::RelationId;
-use cardinal_diag::baseline::Baseline;
+use cardinal_diag::Baseline;
 use cardinal_grain::{GrainStatus, RelationSummary, Verdict};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

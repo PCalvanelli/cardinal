@@ -13,7 +13,7 @@
 mod graph;
 mod node;
 mod operator;
-pub mod shapes;
+mod shapes;
 mod sites;
 mod tool;
 
@@ -42,8 +42,8 @@ pub use tool::{plan_failure, unknown_function};
 use cardinal_dbt::{Project, Relation, RelationId};
 use cardinal_diag::{Code, Diagnostic, Label};
 use cardinal_grain::{AnalyzedModel, DeclaredCheck};
+use cardinal_sql::Functions;
 use cardinal_sql::SqlSpan;
-use cardinal_sql::provider::Functions;
 use std::collections::BTreeSet;
 
 /// Turns positions in a relation's compiled SQL into labels in the user's own files.
@@ -138,9 +138,31 @@ pub(crate) fn decl_label(rel: &Relation, message: String) -> Label {
 }
 
 /// Changes whenever the set of checks or their output changes, so cached results from
-/// an older check set are not reused.
+/// an older check set are not reused. It is in every cache key and shapes file, and
+/// names the codes the model checks report (plus P003, whose shapes `--state` reads).
+/// A test catches a check whose code is outside it; a change to what an existing check
+/// reports needs a bump too, which no test can see.
 pub const CHECKS_FINGERPRINT: &str = "G001-G014+P003";
 
 pub(crate) fn tuple(names: &[String]) -> String {
     format!("({})", names.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_covers_every_model_check() {
+        let range = CHECKS_FINGERPRINT.split('+').next().unwrap();
+        let (lo, hi) = range.split_once('-').unwrap();
+        let (lo, hi): (Code, Code) = (lo.parse().unwrap(), hi.parse().unwrap());
+        for check in model_checks() {
+            let c = check.code();
+            assert!(
+                lo <= c && c <= hi,
+                "{c} is outside CHECKS_FINGERPRINT ({CHECKS_FINGERPRINT}): bump it"
+            );
+        }
+    }
 }

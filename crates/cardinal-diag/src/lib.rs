@@ -1,13 +1,16 @@
 //! Diagnostics are plain data, rendered later as text, JSON or SARIF.
 
-pub mod baseline;
-pub mod code;
+mod baseline;
+mod code;
 pub mod render;
-pub mod sourcemap;
+mod sourcemap;
 pub mod suppress;
 
-pub use code::{ALL_LAYERS, Code, Layer, Severity};
+pub use baseline::{Baseline, BaselineEntry};
+pub use code::{ALL_CODES, ALL_LAYERS, Code, Layer, Severity};
+pub use sourcemap::SourceMap;
 
+use cardinal_dbt::RelationId;
 use cardinal_sql::SqlSpan;
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +33,8 @@ pub struct Fix {
 pub struct Diagnostic {
     pub code: Code,
     pub severity: Severity,
-    /// dbt unique id of the model the finding belongs to.
-    pub relation: String,
+    /// The model the finding belongs to.
+    pub relation: RelationId,
     pub message: String,
     pub primary: Label,
     pub secondary: Vec<Label>,

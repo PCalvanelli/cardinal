@@ -95,7 +95,7 @@ fn build(
         } else {
             Severity::Error
         },
-        relation: model.relation.0.clone(),
+        relation: model.relation.clone(),
         message: Code::G001.title().into(),
         primary,
         secondary,

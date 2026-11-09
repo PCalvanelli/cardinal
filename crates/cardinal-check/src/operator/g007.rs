@@ -143,7 +143,7 @@ fn check(
     Some(Diagnostic {
         code: Code::G007,
         severity: Code::G007.default_severity(),
-        relation: model.relation.0.clone(),
+        relation: model.relation.clone(),
         message: format!("{name}() ordering can tie"),
         primary: cx.locator.label(&model.relation, span, label),
         secondary: vec![],

@@ -148,7 +148,7 @@ fn check_union(
         out.push(Diagnostic {
             code: Code::G012,
             severity: Code::G012.default_severity(),
-            relation: model.relation.0.clone(),
+            relation: model.relation.clone(),
             message: format!(
                 "UNION drops repeated rows, so equal {} values from different rows count once",
                 qty.join(", ")

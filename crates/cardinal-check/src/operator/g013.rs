@@ -11,12 +11,12 @@
 use crate::{Check, CheckContext};
 use cardinal_diag::{Code, Diagnostic, Fix, Label, normalize_text};
 use cardinal_grain::{AnalyzedModel, col_index, unalias};
+use cardinal_sql::TokenKind;
 use cardinal_sql::datafusion_common::tree_node::TreeNodeRecursion;
 use cardinal_sql::datafusion_expr::expr::AggregateFunction;
 use cardinal_sql::datafusion_expr::logical_plan::{Aggregate, Filter, Join, JoinType};
 use cardinal_sql::datafusion_expr::utils::split_conjunction;
 use cardinal_sql::datafusion_expr::{BinaryExpr, Expr, LogicalPlan, Operator};
-use cardinal_sql::lex::Kind;
 use cardinal_sql::{SourceText, SqlSpan, Tokens};
 
 pub struct CountOuterJoin;
@@ -180,7 +180,7 @@ fn check_aggregate(
         out.push(Diagnostic {
             code: Code::G013,
             severity: Code::G013.default_severity(),
-            relation: model.relation.0.clone(),
+            relation: model.relation.clone(),
             message: format!(
                 "{written} counts 1, not 0, for {kept} rows with no {filled} row"
             ),
@@ -247,7 +247,8 @@ fn literal_count_span(text: &SourceText<'_>, used: &mut Vec<usize>) -> Option<Sq
             continue;
         };
         let literal = t.is_punct(arg, '*')
-            || (t.get(arg).kind == Kind::Number && t.text(arg).bytes().all(|b| b.is_ascii_digit()));
+            || (t.get(arg).kind == TokenKind::Number
+                && t.text(arg).bytes().all(|b| b.is_ascii_digit()));
         let Some(close) = t.next(arg).filter(|&c| t.is_punct(c, ')')) else {
             continue;
         };
