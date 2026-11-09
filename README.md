@@ -31,7 +31,9 @@ error[G001]: a join repeats values that are then added up
 9 | join {{ ref('int_order_items') }} i using (order_id)
   | ---------------------------------------------------- one-to-many: rows repeat per row of int_order_items
   |
+  = note: order_lines has one row per (order_id, line_id): one-to-many join on order_id
   = help: sum shipping_fee per (order_id) before the join, or read it from a table with one row per (order_id)
+  = see: cardinal explain G001
 ```
 
 `order_lines` has one row per order line, but each order has one shipping fee. The join
@@ -56,7 +58,8 @@ dbt compile && dbt docs generate   # writes target/manifest.json and target/cata
 cardinal init
 ```
 
-`cardinal init` checks that the artifacts are there and current, then sets up Cardinal:
+`cardinal init` checks that the artifacts are there and current, sets up Cardinal, and
+runs a first check:
 
 ```
 Setting up Cardinal in /home/me/shop
@@ -70,20 +73,9 @@ Setting up Cardinal in /home/me/shop
   ✓ recorded 1 finding in .cardinal/baseline.json
       in CI, cardinal check --baseline .cardinal/baseline.json fails only on new ones
   ✓ added .cardinal/cache/ to .gitignore
-```
 
-Commit cardinal.toml and the baseline. Then:
-
-```sh
-cardinal check
-```
-
-Cardinal takes about a second, even on a thousand models. The first run usually ends
-like this:
-
-```
-Analyzed 214 models in 0.41s: 38 with a known key (18%).
-Findings: 0 errors, 1 warning (G003 ×1).
+Analyzed 214 models: 38 with a known key (18%).
+Findings: 0 errors, 1 warning (G003 ×1). Run cardinal check to see them.
 Next: 3 sources without a known key keep 97 models from being checked: app.orders, app.users, stripe.charges. Run cardinal guess so dbt can test likely keys, or declare them (see cardinal coverage).
 ```
 
@@ -95,21 +87,43 @@ Next: 3 sources without a known key keep 97 models from being checked: app.order
 - **Only errors fail the run.** Warnings don't, so you can add Cardinal to an existing
   project without breaking anything.
 
+Running `cardinal init` again is safe: it keeps an existing cardinal.toml and baseline (`--force`
+rewrites them). Commit both, then see the findings:
+
+```sh
+cardinal check
+```
+
+Cardinal takes about a second, even on a thousand models, and caches what it learns
+about each model, so the next run re-analyzes only what changed. `cardinal check` ends
+with the same summary, findings grouped by layer:
+
+```
+Analyzed 214 models in 0.41s: 38 with a known key (18%).
+Findings: 0 errors, 1 warning (operator: G003 ×1).
+```
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | No errors (warnings may be shown) |
 | 1 | At least one error |
 | 2 | Cardinal couldn't run, for example with no manifest |
 
+To check part of the project, select models the way dbt does:
+`cardinal check orders+` checks `orders` and everything downstream of it, and
+`cardinal check --changed-since main` checks the models changed since a git ref, plus
+their descendants. `-s` takes a name, a path (`models/marts/`) or `tag:x`.
+
 Other commands:
 
-| Command | What it shows |
+| Command | What it does |
 | --- | --- |
-| `cardinal describe MODEL` | A model's key, what each column belongs to, its joins, and whether it keeps each parent's rows exactly once |
-| `cardinal explain G001` | What a finding means, with a broken and a fixed query |
-| `cardinal coverage` | Which keys to declare next |
-| `cardinal guess` | Likely keys, written as dbt tests for dbt to check |
-| `cardinal assumptions` | The facts Cardinal takes on trust, and whether a dbt test checks each one |
+| `cardinal describe MODEL` | Shows a model's key, what each column belongs to, the rows of each parent it keeps, what it assumes, and its findings |
+| `cardinal explain G001` | Explains a finding, with a broken and a fixed query |
+| `cardinal coverage` | Lists which keys to declare next, most models unlocked first |
+| `cardinal guess` | Writes likely keys as dbt tests to `tests/cardinal/`; run `dbt test --select tag:cardinal` and Cardinal uses the ones that pass |
+| `cardinal assumptions` | Lists the facts Cardinal takes on trust and whether a dbt test checks each one; `--emit-tests` prints the tests that would |
+| `cardinal watch` | Runs `check` again each time `target/manifest.json` changes |
 
 ## Add it to CI
 
@@ -199,7 +213,7 @@ The operator layer is a catalog of what each operator can get wrong:
 
 | Operator | What goes wrong | Code | Default |
 | --- | --- | --- | --- |
-| join | Fans out, and a sum or count then adds a repeated value more than once | G001 | error |
+| join | Fans out, and a sum or count then adds a repeated value more than once | G001 | error, warning for an aggregate Cardinal doesn't know |
 | join | Many-to-many: neither side is unique on the join columns | G003 | warning |
 | filter | `NOT IN` over values that can be null keeps no rows; `WHERE` on a left join's null-filled side turns it into an inner join | G011 | warning |
 | filter | A soft-delete flag (`_fivetran_deleted`, `_sdc_deleted_at`, `_ab_cdc_deleted_at`) is dropped with nothing on the way filtering on it, so deleted rows count | G014 | warning |
@@ -209,7 +223,7 @@ The operator layer is a catalog of what each operator can get wrong:
 | window, dedup | `row_number`, `lag`, `lead` or `first_value` ordered by columns that can tie, so the row picked is random | G007 | warning |
 | set operation | `UNION` matches columns by position: a later branch's columns are swapped or named differently | G010 | warning, error when swapped |
 | set operation | `UNION` (not `UNION ALL`) merges equal rows, and a branch can repeat a row with an amount in it, so real rows are lost | G012 | warning |
-| the model | A declared key, or an incremental model's or snapshot's `unique_key`, that the SQL doesn't guarantee | G002, G006 | warning |
+| the model | A declared key, or an incremental model's or snapshot's `unique_key`, that the SQL doesn't guarantee | G002, G006 | warning, error when `unique_key` names a column the model doesn't output |
 | the model | An `exactly_once` contract that isn't proven, or rests on something no test checks | P001, P002 | error, warning |
 | the model | A guarantee main has that the branch loses (with `--state`) | P003 | error |
 
@@ -238,6 +252,20 @@ To silence one finding, add a comment with a reason:
 sum(shipping_fee) as shipping  -- cardinal: allow(G001) reason: fee is allocated per line upstream
 ```
 
+To change a code's severity everywhere, set it in cardinal.toml, or for one run with
+`--deny G003` (make it an error) or `--allow G003` (turn it off):
+
+```toml
+[severity]
+G003 = "error"            # "error", "warning", "info" or "off"
+
+[[override]]              # for files under a path; the longest matching path wins
+path = "models/legacy/"
+G001 = "warning"
+```
+
+`--min-severity info` also shows info findings, such as G004.
+
 ## How it works
 
 Cardinal doesn't run your SQL against data. It runs it against facts about the data:
@@ -251,14 +279,40 @@ any data that passes the tests it relies on.
 
 ## Development
 
+The same steps as CI:
+
 ```sh
-cargo test --workspace                                          # unit, rule and golden tests
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --exclude cardinal-grain                 # unit, rule and golden tests
+cargo test -p cardinal-grain --test rules --lib                 # grain rule tests
 cargo test --release -p cardinal-grain --test soundness         # property tests against real query results
 cargo test --release -p cardinal-cli --test speed -- --ignored  # speed targets
-cargo xtask fixtures                                            # rebuild fixture artifacts (needs dbt-duckdb and duckdb)
+```
+
+And for working on Cardinal:
+
+```sh
+cargo xtask fixtures [NAME...]   # rebuild fixture artifacts (needs dbt-duckdb and duckdb)
+cargo xtask new-check G015       # scaffold a check, its explain page and a fixture project
+cargo xtask synth DIR [N]        # write a synthetic N-model project for benchmarks
+cargo xtask corpus DIR...        # run cardinal check over compiled dbt projects, with stats
 ```
 
 `fixtures/` holds small dbt projects with compiled artifacts checked in, so you can try
 Cardinal without dbt: `CARDINAL_ALLOW_STALE=1 cardinal check --project-dir fixtures/shop`.
 `docs/explain/` has one page per finding code. The toolchain is pinned to Rust 1.94, and
 DataFusion to `=55.2.0`.
+
+The workspace is a pipeline of crates, each depending only on the ones above it:
+
+| Crate | What it does |
+| --- | --- |
+| `cardinal-sql` | Plans compiled SQL with DataFusion, per dialect, with stubs for unknown functions |
+| `cardinal-dbt` | Loads the manifest and catalog into a project: relations, columns, declarations, the DAG |
+| `cardinal-diag` | Findings as data, rendered as text, JSON or SARIF; baselines and suppressions |
+| `cardinal-grain` | The analysis: keys, functional dependencies, nullability and preserved rows for every plan node |
+| `cardinal-check` | The checks, one per code, in the four layers |
+| `cardinal-cache` | The per-model fact cache in `.cardinal/cache` |
+| `cardinal-engine` | Runs the analysis and checks over a project in DAG order, compares with `--state`, and makes guesses |
+| `cardinal-cli` | The `cardinal` command: arguments, output, and the files commands write |
+| `cardinal-synth` | Synthetic projects for benchmarks and speed tests (not published) |
